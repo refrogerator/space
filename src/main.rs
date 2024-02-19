@@ -5,7 +5,7 @@ use glow::*;
 use sdl2::event::{Event, WindowEvent};
 use freetype::Library;
 use freetype::face::LoadFlag;
-use sdl2::keyboard::Scancode;
+use sdl2::keyboard::Keycode;
 use sdl2::keyboard::Mod;
 
 fn create_shader(gl: &glow::Context, vert: &str, frag: &str) -> glow::Program {
@@ -40,6 +40,21 @@ fn create_shader(gl: &glow::Context, vert: &str, frag: &str) -> glow::Program {
         gl.detach_shader(program, fs);
         gl.delete_shader(fs);
         return program;
+    }
+}
+
+#[derive(Clone, Debug)]
+struct IVec2 {
+    x: i32,
+    y: i32
+}
+
+impl IVec2 {
+    fn new(x: i32, y: i32) -> Self {
+        return IVec2 {
+            x,
+            y
+        }
     }
 }
 
@@ -188,17 +203,37 @@ struct Glyph {
     y: i32,
 }
 
+enum CursorMode {
+    Block,
+    Bar,
+    Underline
+}
+
+#[derive(Debug)]
+enum Position {
+    Range(IVec2, IVec2),
+    Block(IVec2, IVec2),
+    Lines(i32, i32)
+}
+
+enum Argument {
+}
+
 #[derive(PartialEq)]
 enum EditorMode {
     Normal,
-    Insert
+    Insert,
+    OperatorPending(fn(&mut EditorState, Position)),
+    ArgumentPending(String, fn(&mut EditorState, &str))
 }
 
 struct EditorState<'a, 'b> {
     contents: Option<Vec<String>>,
     filename: Option<String>,
-    cursor: (i32, i32),
+    view: IVec2,
+    cursor: IVec2,
     mode: EditorMode,
+    argument: String,
     drawing_context: &'a DrawingContext<'b>,
 }
 
@@ -206,7 +241,8 @@ impl <'a, 'b>EditorState<'a, 'b> {
     fn load_file(&mut self, filename: &str) {
         self.filename = Some(filename.to_string());
         self.contents = Some(std::fs::read_to_string(filename).unwrap().lines().map(|a| a.to_owned()).collect());
-        self.cursor = (0, 0);
+        self.view = IVec2::new(0, 0);
+        self.cursor = IVec2::new(0, 0);
         self.mode = EditorMode::Normal;
     }
 
@@ -226,62 +262,133 @@ impl <'a, 'b>EditorState<'a, 'b> {
         }
     }
 
-    fn move_up(&mut self) {
-        if self.cursor.1 > 0 {
-            self.cursor.1 -= 1;
-            if self.get_current_line().len() == 0 {
-                self.cursor.0 = 0;
-            } else if self.cursor.0 >= self.get_current_line().len() as i32 {
-                self.cursor.0 = self.get_current_line().len() as i32 - 1;
+    fn arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState, &str)) {
+        self.mode = EditorMode::ArgumentPending(query_text.to_string(), callback);
+        self.drawing_context.video.text_input().start();
+    }
+
+    fn open_file_mode(&mut self) {
+        self.arg_pending_mode("open file: ", |a, b| a.load_file(b));
+    }
+
+    fn left(&self, cursor: IVec2) -> Position {
+        if cursor.x > 0 {
+            let pos = IVec2::new(cursor.x - 1, cursor.y);
+            return Position::Range(cursor, pos);
+        }
+        return Position::Range(cursor.clone(), cursor);
+    }
+
+    fn right(&self, cursor: IVec2) -> Position {
+        if let Some(ref contents) = self.contents {
+            if self.cursor.x < contents[cursor.y as usize].len() as i32 - 1 {
+                let pos = IVec2::new(cursor.x + 1, cursor.y);
+                return Position::Range(cursor, pos);
             }
         }
+        return Position::Range(cursor.clone(), cursor)
+    }
+
+    fn up(&mut self, cursor: IVec2) -> Position {
+        if cursor.y > 0 {
+            if self.get_line(cursor.y - 1).len() == 0 {
+                return Position::Range(cursor.clone(), IVec2::new(0, cursor.y - 1));
+            } else if cursor.x >= self.get_line(cursor.y - 1).len() as i32 {
+                return Position::Range(cursor.clone(), IVec2::new(self.get_line(cursor.y - 1).len() as i32 - 1, cursor.y - 1));
+            }
+            return Position::Range(cursor.clone(), IVec2::new(cursor.x, cursor.y - 1));
+        }
+        return Position::Range(cursor.clone(), cursor);
+    }
+
+    // i need to fix this syntax somehow
+    fn down(&mut self, cursor: IVec2) -> Position {
+        if let Some(ref contents) = self.contents {
+            if cursor.y < contents.len() as i32 - 1 {
+                let next_line = self.get_line(cursor.y + 1);
+                if cursor.x > next_line.len() as i32 {
+                    if next_line.len() == 0 {
+                        return Position::Range(cursor.clone(), IVec2::new(0, cursor.y + 1));
+                    }
+                    return Position::Range(cursor.clone(), IVec2::new(next_line.len() as i32, cursor.y + 1));
+                }
+                return Position::Range(cursor.clone(), IVec2::new(cursor.x, cursor.y + 1));
+            }
+        }
+        return Position::Range(cursor.clone(), cursor);
+    }
+
+    fn down_whole_line(&mut self, cursor: IVec2) -> Position {
+        if let Some(ref contents) = self.contents {
+            return Position::Lines(cursor.y, cursor.y + 1);
+        }
+        return Position::Range(cursor.clone(), cursor);
+    }
+
+    fn _move(&mut self, pos: Position) {
+        match pos {
+            Position::Range(_, b) => {
+                self.cursor = b;
+            }
+            Position::Block(_, b) => {
+                self.cursor = b;
+            }
+            Position::Lines(_, b) => {
+                self.cursor.x = b;
+            }
+        }
+    }
+
+    fn move_left(&mut self) {
+        let pos = self.left(self.cursor.clone());
+        self._move(pos);
+    }
+    fn move_up(&mut self) {
+        let pos = self.up(self.cursor.clone());
+        self._move(pos);
     }
     fn move_down(&mut self) {
-        if let Some(ref contents) = self.contents {
-            if self.cursor.1 < contents.len() as i32 - 1 {
-                self.cursor.1 += 1;
-                if self.get_current_line().len() == 0 {
-                    self.cursor.0 = 0;
-                } else if self.cursor.0 >= self.get_current_line().len() as i32 {
-                    self.cursor.0 = self.get_current_line().len() as i32 - 1;
-                }
-            }
-        }
-    }
-    fn move_left(&mut self) {
-        if self.cursor.0 > 0 {
-            self.cursor.0 -= 1;
-        }
+        let pos = self.down(self.cursor.clone());
+        self._move(pos);
     }
     fn move_right_normal(&mut self) {
         if let Some(ref contents) = self.contents {
-            if self.cursor.0 < contents[self.cursor.1 as usize].len() as i32 - 1 {
-                self.cursor.0 += 1;
+            if self.cursor.x < contents[self.cursor.y as usize].len() as i32 - 1 {
+                self.cursor.x += 1;
             }
         }
     }
     fn move_right_insert(&mut self) {
         if let Some(ref contents) = self.contents {
-            if self.cursor.0 < contents[self.cursor.1 as usize].len() as i32 {
-                self.cursor.0 += 1;
+            if self.cursor.x < contents[self.cursor.y as usize].len() as i32 {
+                self.cursor.x += 1;
             }
         }
     }
+
     fn move_to_line_start(&mut self) {
-        self.cursor.0 = 0;
+        self.cursor.x = 0;
     }
 
     fn move_to_line_end_normal(&mut self) {
-        self.cursor.0 = self.get_current_line().len() as i32 - 1;
+        self.cursor.x = self.get_current_line().len() as i32 - 1;
     }
 
     fn move_to_line_end(&mut self) {
-        self.cursor.0 = self.get_current_line().len() as i32;
+        self.cursor.x = self.get_current_line().len() as i32;
     }
 
     fn get_current_line_mut(&mut self) -> &mut String {
         if let Some(ref mut contents) = self.contents {
-            return &mut contents[self.cursor.1 as usize];
+            return &mut contents[self.cursor.y as usize];
+        } else {
+            panic!("no file loaded");
+        }
+    }
+
+    fn get_line(&self, line: i32) -> &str {
+        if let Some(ref contents) = self.contents {
+            return &contents[line as usize];
         } else {
             panic!("no file loaded");
         }
@@ -289,60 +396,66 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn get_current_line(&self) -> &str {
         if let Some(ref contents) = self.contents {
-            return &contents[self.cursor.1 as usize];
+            return &contents[self.cursor.y as usize];
         } else {
             panic!("no file loaded");
         }
     }
 
-    fn next_word(&self) -> (i32, i32) {
+    fn next_word(&self, cursor: IVec2) -> Position {
         let line = self.get_current_line();
-        let alpha = line.as_bytes()[self.cursor.0 as usize].is_ascii_alphanumeric();
+        let alpha = line.as_bytes()[cursor.x as usize].is_ascii_alphanumeric();
         let mut first_word = alpha;
-        for (i, v) in line.chars().skip(self.cursor.0 as usize + 1).enumerate() {
+        for (i, v) in line.chars().skip(cursor.x as usize + 1).enumerate() {
             if first_word {
                 if !v.is_alphanumeric() {
                     first_word = false;
                 }
             } else {
                 if v.is_alphanumeric() {
-                    return (self.cursor.0 + i as i32 + 1, self.cursor.1);
+                    let pos = IVec2::new(cursor.x + i as i32 + 1, cursor.y);
+                    return Position::Range(cursor.clone(), pos);
                 }
             }
         }
-        return (line.len() as i32 - 1, self.cursor.1);
+        let pos = IVec2::new(line.len() as i32, cursor.y);
+        return Position::Range(cursor.clone(), pos);
     }
 
-    fn previous_word(&mut self) -> (i32, i32) {
+    fn previous_word(&mut self, cursor: IVec2) -> Position {
         let line = self.get_current_line();
-        let alpha = line.as_bytes()[self.cursor.0 as usize].is_ascii_alphanumeric();
+        let alpha = line.as_bytes()[cursor.x as usize].is_ascii_alphanumeric();
         let mut first_word = alpha;
-        for (i, v) in line.chars().rev().skip(line.len() - (self.cursor.0 as usize)).enumerate() {
+        for (i, v) in line.chars().rev().skip(line.len() - (cursor.x as usize)).enumerate() {
             if first_word {
                 if !v.is_alphanumeric() {
                     first_word = false;
                 }
             } else {
                 if v.is_alphanumeric() {
-                    return (self.cursor.0 - i as i32 - 1, self.cursor.1);
+                    let pos = IVec2::new(cursor.x - i as i32 - 1, cursor.y);
+                    return Position::Range(cursor.clone(), pos);
                 }
             }
         }
-        return (0, self.cursor.1);
+        let pos = IVec2::new(0, cursor.y);
+        return Position::Range(cursor.clone(), pos);
     }
 
     fn move_word(&mut self) {
-        self.cursor = self.next_word();
+        let pos = self.next_word(self.cursor.clone());
+        self._move(pos);
     }
 
     fn move_word_backwards(&mut self) {
-        self.cursor = self.previous_word();
+        let pos = self.previous_word(self.cursor.clone());
+        self._move(pos);
     }
 
     fn newline_at_cursor(&mut self) {
         if let Some(ref mut contents) = self.contents {
-            let new_line = contents[self.cursor.1 as usize].split_off(self.cursor.0 as usize);
-            contents.insert(self.cursor.1 as usize + 1, new_line);
+            let new_line = contents[self.cursor.y as usize].split_off(self.cursor.x as usize);
+            contents.insert(self.cursor.y as usize + 1, new_line);
             self.move_down();
             self.move_to_line_start();
         }
@@ -350,7 +463,7 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn open_above(&mut self) {
         if let Some(ref mut contents) = self.contents {
-            contents.insert(self.cursor.1 as usize, String::new());
+            contents.insert(self.cursor.y as usize, String::new());
             self.move_to_line_start();
             self.insert_mode();
         }
@@ -358,7 +471,7 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn open_below(&mut self) {
         if let Some(ref mut contents) = self.contents {
-            contents.insert(self.cursor.1 as usize + 1, String::new());
+            contents.insert(self.cursor.y as usize + 1, String::new());
             self.move_down();
             self.move_to_line_start();
             self.insert_mode();
@@ -367,24 +480,24 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn insert(&mut self, text: &str) {
         if let Some(ref mut contents) = self.contents {
-            contents[self.cursor.1 as usize].insert_str(self.cursor.0 as usize, text);
+            contents[self.cursor.y as usize].insert_str(self.cursor.x as usize, text);
             self.move_right_insert();
         }
     }
 
     fn backspace(&mut self) {
         if let Some(ref mut contents) = self.contents {
-            if self.cursor.0 > 0 {
-                contents[self.cursor.1 as usize].remove(self.cursor.0 as usize - 1);
+            if self.cursor.x > 0 {
+                contents[self.cursor.y as usize].remove(self.cursor.x as usize - 1);
                 self.move_left();
             } else {
-                if contents[self.cursor.1 as usize].len() > 0 {
-                    let line = contents.remove(self.cursor.1 as usize);
+                if contents[self.cursor.y as usize].len() > 0 {
+                    let line = contents.remove(self.cursor.y as usize);
                     self.move_up();
                     self.move_to_line_end();
                     self.get_current_line_mut().push_str(&line);
                 } else {
-                    contents.remove(self.cursor.1 as usize);
+                    contents.remove(self.cursor.y as usize);
                     self.move_up();
                     self.move_to_line_end();
                 }
@@ -399,8 +512,8 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn insert_mode_after(&mut self) {
         if let Some(ref mut contents) = self.contents {
-            if self.cursor.0 < contents[self.cursor.1 as usize].len() as i32 {
-                self.cursor.0 += 1;
+            if self.cursor.x < contents[self.cursor.y as usize].len() as i32 {
+                self.cursor.x += 1;
             }
         }
         self.insert_mode();
@@ -408,18 +521,49 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn normal_mode(&mut self) {
         if self.get_current_line().len() == 0 {
-            self.cursor.0 = 0;
-        } else if self.cursor.0 >= self.get_current_line().len() as i32 {
-            self.cursor.0 = self.get_current_line().len() as i32 - 1;
+            self.cursor.x = 0;
+        } else if self.cursor.x >= self.get_current_line().len() as i32 {
+            self.cursor.x = self.get_current_line().len() as i32 - 1;
         }
         self.mode = EditorMode::Normal;
         self.drawing_context.video.text_input().stop();
+    }
+
+    fn delete_pos(&mut self, pos: Position) {
+        match pos {
+            Position::Range(start, end) => {
+                if let Some(ref mut contents) = self.contents {
+                    println!("{:?}, {:?}", start, end);
+                    if start.y != end.y {
+                        contents[start.y as usize] = contents[start.y as usize].chars().take(start.x as usize).collect();
+                        contents[end.y as usize] = contents[end.y as usize].chars().skip(end.x as usize).collect();
+                        for _ in (start.y + 1).max(0)..(end.y).min(contents.len() as i32 - 1) {
+                            contents.remove(start.y as usize);
+                        }
+                    } else {
+                        contents[start.y as usize] = contents[start.y as usize].chars().take(start.x as usize).chain(contents[start.y as usize].chars().skip(end.x as usize)).collect();
+                    }
+                }
+            }
+            Position::Lines(start, end) => {
+                if let Some(ref mut contents) = self.contents {
+                    for _ in (start).max(0)..=(end).min(contents.len() as i32 - 1) {
+                        contents.remove(start as usize);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn delete_mode(&mut self) {
+        self.mode = EditorMode::OperatorPending(|a,b| a.delete_pos(b));
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
-    scancode: sdl2::keyboard::Scancode,
+    scancode: sdl2::keyboard::Keycode,
     mods: sdl2::keyboard::Mod,
 }
 
@@ -438,145 +582,145 @@ fn string_to_keys(s: &str) -> Vec<Key> {
         };
         println!("{}, {}", keychord, ctrl);
         let (scancode, shift) = match keychord {
-            "A" => { (Scancode::A, true) },
-            "B" => { (Scancode::B, true) },
-            "C" => { (Scancode::C, true) },
-            "D" => { (Scancode::D, true) },
-            "E" => { (Scancode::E, true) },
-            "F" => { (Scancode::F, true) },
-            "G" => { (Scancode::G, true) },
-            "H" => { (Scancode::H, true) },
-            "I" => { (Scancode::I, true) },
-            "J" => { (Scancode::J, true) },
-            "K" => { (Scancode::K, true) },
-            "L" => { (Scancode::L, true) },
-            "M" => { (Scancode::M, true) },
-            "N" => { (Scancode::N, true) },
-            "O" => { (Scancode::O, true) },
-            "P" => { (Scancode::P, true) },
-            "Q" => { (Scancode::Q, true) },
-            "R" => { (Scancode::R, true) },
-            "S" => { (Scancode::S, true) },
-            "T" => { (Scancode::T, true) },
-            "U" => { (Scancode::U, true) },
-            "V" => { (Scancode::V, true) },
-            "W" => { (Scancode::W, true) },
-            "X" => { (Scancode::X, true) },
-            "Y" => { (Scancode::Y, true) },
-            "Z" => { (Scancode::Z, true) },
-            "!" => { (Scancode::Num1, true) },
-            "@" => { (Scancode::Num2, true) },
-            "#" => { (Scancode::Num3, true) },
-            "$" => { (Scancode::Num4, true) },
-            "%" => { (Scancode::Num5, true) },
-            "^" => { (Scancode::Num6, true) },
-            "&" => { (Scancode::Num7, true) },
-            "*" => { (Scancode::Num8, true) },
-            "(" => { (Scancode::Num9, true) },
-            ")" => { (Scancode::Num0, true) },
-            "RET" => { (Scancode::Return, true) },
-            "ESC" => { (Scancode::Escape, true) },
-            "BSP" => { (Scancode::Backspace, true) },
-            "TAB" => { (Scancode::Tab, true) },
-            "SPC" => { (Scancode::Space, true) },
-            "_" => { (Scancode::Minus, true) },
-            "+" => { (Scancode::Equals, true) },
-            "{" => { (Scancode::LeftBracket, true) },
-            "}" => { (Scancode::RightBracket, true) },
-            "|" => { (Scancode::Backslash, true) },
-            ":" => { (Scancode::Semicolon, true) },
-            "\"" => { (Scancode::Apostrophe, true) },
-            "~" => { (Scancode::Grave, true) },
-            "<" => { (Scancode::Comma, true) },
-            ">" => { (Scancode::Period, true) },
-            "?" => { (Scancode::Slash, true) },
-            "CAPS" => { (Scancode::CapsLock, true) },
-            "F1" => { (Scancode::F1, true) },
-            "F2" => { (Scancode::F2, true) },
-            "F3" => { (Scancode::F3, true) },
-            "F4" => { (Scancode::F4, true) },
-            "F5" => { (Scancode::F5, true) },
-            "F6" => { (Scancode::F6, true) },
-            "F7" => { (Scancode::F7, true) },
-            "F8" => { (Scancode::F8, true) },
-            "F9" => { (Scancode::F9, true) },
-            "F10" => { (Scancode::F10, true) },
-            "F11" => { (Scancode::F11, true) },
-            "F12" => { (Scancode::F12, true) },
+            "A" => { (Keycode::A, true) },
+            "B" => { (Keycode::B, true) },
+            "C" => { (Keycode::C, true) },
+            "D" => { (Keycode::D, true) },
+            "E" => { (Keycode::E, true) },
+            "F" => { (Keycode::F, true) },
+            "G" => { (Keycode::G, true) },
+            "H" => { (Keycode::H, true) },
+            "I" => { (Keycode::I, true) },
+            "J" => { (Keycode::J, true) },
+            "K" => { (Keycode::K, true) },
+            "L" => { (Keycode::L, true) },
+            "M" => { (Keycode::M, true) },
+            "N" => { (Keycode::N, true) },
+            "O" => { (Keycode::O, true) },
+            "P" => { (Keycode::P, true) },
+            "Q" => { (Keycode::Q, true) },
+            "R" => { (Keycode::R, true) },
+            "S" => { (Keycode::S, true) },
+            "T" => { (Keycode::T, true) },
+            "U" => { (Keycode::U, true) },
+            "V" => { (Keycode::V, true) },
+            "W" => { (Keycode::W, true) },
+            "X" => { (Keycode::X, true) },
+            "Y" => { (Keycode::Y, true) },
+            "Z" => { (Keycode::Z, true) },
+            "!" => { (Keycode::Num1, true) },
+            "@" => { (Keycode::Num2, true) },
+            "#" => { (Keycode::Num3, true) },
+            "$" => { (Keycode::Num4, true) },
+            "%" => { (Keycode::Num5, true) },
+            "^" => { (Keycode::Num6, true) },
+            "&" => { (Keycode::Num7, true) },
+            "*" => { (Keycode::Num8, true) },
+            "(" => { (Keycode::Num9, true) },
+            ")" => { (Keycode::Num0, true) },
+            "RET" => { (Keycode::Return, true) },
+            "ESC" => { (Keycode::Escape, true) },
+            "BSP" => { (Keycode::Backspace, true) },
+            "TAB" => { (Keycode::Tab, true) },
+            "SPC" => { (Keycode::Space, true) },
+            "_" => { (Keycode::Minus, true) },
+            "+" => { (Keycode::Equals, true) },
+            "{" => { (Keycode::LeftBracket, true) },
+            "}" => { (Keycode::RightBracket, true) },
+            "|" => { (Keycode::Backslash, true) },
+            ":" => { (Keycode::Semicolon, true) },
+            "\"" => { (Keycode::Quote, true) },
+            "~" => { (Keycode::Backquote, true) },
+            "<" => { (Keycode::Comma, true) },
+            ">" => { (Keycode::Period, true) },
+            "?" => { (Keycode::Slash, true) },
+            "CAPS" => { (Keycode::CapsLock, true) },
+            "F1" => { (Keycode::F1, true) },
+            "F2" => { (Keycode::F2, true) },
+            "F3" => { (Keycode::F3, true) },
+            "F4" => { (Keycode::F4, true) },
+            "F5" => { (Keycode::F5, true) },
+            "F6" => { (Keycode::F6, true) },
+            "F7" => { (Keycode::F7, true) },
+            "F8" => { (Keycode::F8, true) },
+            "F9" => { (Keycode::F9, true) },
+            "F10" => { (Keycode::F10, true) },
+            "F11" => { (Keycode::F11, true) },
+            "F12" => { (Keycode::F12, true) },
 
-            "a" => { (Scancode::A, false) },
-            "b" => { (Scancode::B, false) },
-            "c" => { (Scancode::C, false) },
-            "d" => { (Scancode::D, false) },
-            "e" => { (Scancode::E, false) },
-            "f" => { (Scancode::F, false) },
-            "g" => { (Scancode::G, false) },
-            "h" => { (Scancode::H, false) },
-            "i" => { (Scancode::I, false) },
-            "j" => { (Scancode::J, false) },
-            "k" => { (Scancode::K, false) },
-            "l" => { (Scancode::L, false) },
-            "m" => { (Scancode::M, false) },
-            "n" => { (Scancode::N, false) },
-            "o" => { (Scancode::O, false) },
-            "p" => { (Scancode::P, false) },
-            "q" => { (Scancode::Q, false) },
-            "r" => { (Scancode::R, false) },
-            "s" => { (Scancode::S, false) },
-            "t" => { (Scancode::T, false) },
-            "u" => { (Scancode::U, false) },
-            "v" => { (Scancode::V, false) },
-            "w" => { (Scancode::W, false) },
-            "x" => { (Scancode::X, false) },
-            "y" => { (Scancode::Y, false) },
-            "z" => { (Scancode::Z, false) },
-            "1" => { (Scancode::Num1, false) },
-            "2" => { (Scancode::Num2, false) },
-            "3" => { (Scancode::Num3, false) },
-            "4" => { (Scancode::Num4, false) },
-            "5" => { (Scancode::Num5, false) },
-            "6" => { (Scancode::Num6, false) },
-            "7" => { (Scancode::Num7, false) },
-            "8" => { (Scancode::Num8, false) },
-            "9" => { (Scancode::Num9, false) },
-            "0" => { (Scancode::Num0, false) },
-            "ret" => { (Scancode::Return, false) },
-            "esc" => { (Scancode::Escape, false) },
-            "bsp" => { (Scancode::Backspace, false) },
-            "tab" => { (Scancode::Tab, false) },
-            "spc" => { (Scancode::Space, false) },
-            "-" => { (Scancode::Minus, false) },
-            "=" => { (Scancode::Equals, false) },
-            "[" => { (Scancode::LeftBracket, false) },
-            "]" => { (Scancode::RightBracket, false) },
-            "\\" => { (Scancode::Backslash, false) },
-            ";" => { (Scancode::Semicolon, false) },
-            "'" => { (Scancode::Apostrophe, false) },
-            "`" => { (Scancode::Grave, false) },
-            "," => { (Scancode::Comma, false) },
-            "." => { (Scancode::Period, false) },
-            "/" => { (Scancode::Slash, false) },
-            "caps" => { (Scancode::CapsLock, false) },
-            "f1" => { (Scancode::F1, false) },
-            "f2" => { (Scancode::F2, false) },
-            "f3" => { (Scancode::F3, false) },
-            "f4" => { (Scancode::F4, false) },
-            "f5" => { (Scancode::F5, false) },
-            "f6" => { (Scancode::F6, false) },
-            "f7" => { (Scancode::F7, false) },
-            "f8" => { (Scancode::F8, false) },
-            "f9" => { (Scancode::F9, false) },
-            "f10" => { (Scancode::F10, false) },
-            "f11" => { (Scancode::F11, false) },
-            "f12" => { (Scancode::F12, false) },
-            // Scancode::PrintScreen,
-            // Scancode::ScrollLock,
-            // Scancode::Pause,
-            // Scancode::Insert,
-            // Scancode::Home,
-            // Scancode::PageUp,
-            // Scancode::Delete,
-            // Scancode::End,
+            "a" => { (Keycode::A, false) },
+            "b" => { (Keycode::B, false) },
+            "c" => { (Keycode::C, false) },
+            "d" => { (Keycode::D, false) },
+            "e" => { (Keycode::E, false) },
+            "f" => { (Keycode::F, false) },
+            "g" => { (Keycode::G, false) },
+            "h" => { (Keycode::H, false) },
+            "i" => { (Keycode::I, false) },
+            "j" => { (Keycode::J, false) },
+            "k" => { (Keycode::K, false) },
+            "l" => { (Keycode::L, false) },
+            "m" => { (Keycode::M, false) },
+            "n" => { (Keycode::N, false) },
+            "o" => { (Keycode::O, false) },
+            "p" => { (Keycode::P, false) },
+            "q" => { (Keycode::Q, false) },
+            "r" => { (Keycode::R, false) },
+            "s" => { (Keycode::S, false) },
+            "t" => { (Keycode::T, false) },
+            "u" => { (Keycode::U, false) },
+            "v" => { (Keycode::V, false) },
+            "w" => { (Keycode::W, false) },
+            "x" => { (Keycode::X, false) },
+            "y" => { (Keycode::Y, false) },
+            "z" => { (Keycode::Z, false) },
+            "1" => { (Keycode::Num1, false) },
+            "2" => { (Keycode::Num2, false) },
+            "3" => { (Keycode::Num3, false) },
+            "4" => { (Keycode::Num4, false) },
+            "5" => { (Keycode::Num5, false) },
+            "6" => { (Keycode::Num6, false) },
+            "7" => { (Keycode::Num7, false) },
+            "8" => { (Keycode::Num8, false) },
+            "9" => { (Keycode::Num9, false) },
+            "0" => { (Keycode::Num0, false) },
+            "ret" => { (Keycode::Return, false) },
+            "esc" => { (Keycode::Escape, false) },
+            "bsp" => { (Keycode::Backspace, false) },
+            "tab" => { (Keycode::Tab, false) },
+            "spc" => { (Keycode::Space, false) },
+            "-" => { (Keycode::Minus, false) },
+            "=" => { (Keycode::Equals, false) },
+            "[" => { (Keycode::LeftBracket, false) },
+            "]" => { (Keycode::RightBracket, false) },
+            "\\" => { (Keycode::Backslash, false) },
+            ";" => { (Keycode::Semicolon, false) },
+            "'" => { (Keycode::Quote, false) },
+            "`" => { (Keycode::Backquote, false) },
+            "," => { (Keycode::Comma, false) },
+            "." => { (Keycode::Period, false) },
+            "/" => { (Keycode::Slash, false) },
+            "caps" => { (Keycode::CapsLock, false) },
+            "f1" => { (Keycode::F1, false) },
+            "f2" => { (Keycode::F2, false) },
+            "f3" => { (Keycode::F3, false) },
+            "f4" => { (Keycode::F4, false) },
+            "f5" => { (Keycode::F5, false) },
+            "f6" => { (Keycode::F6, false) },
+            "f7" => { (Keycode::F7, false) },
+            "f8" => { (Keycode::F8, false) },
+            "f9" => { (Keycode::F9, false) },
+            "f10" => { (Keycode::F10, false) },
+            "f11" => { (Keycode::F11, false) },
+            "f12" => { (Keycode::F12, false) },
+            // Keycode::PrintScreen,
+            // Keycode::ScrollLock,
+            // Keycode::Pause,
+            // Keycode::Insert,
+            // Keycode::Home,
+            // Keycode::PageUp,
+            // Keycode::Delete,
+            // Keycode::End,
             // Scancode::PageDown,
             // Scancode::Right,
             // Scancode::Left,
@@ -631,29 +775,42 @@ struct DrawingContext<'a> {
     window: sdl2::video::Window,
 }
 
-fn parse_keymap<'a>(commands: &HashMap<&str, &'a dyn Fn(&mut EditorState)>, input: &[(&str, &str)]) -> Vec<(Vec<Key>, &'a dyn Fn(&mut EditorState))> {
+fn parse_keymap<'a>(commands: &HashMap<&str, EditorOperation<'a>>, input: &[(&str, &str)]) -> Vec<(Vec<Key>, EditorOperation<'a>)> {
     let mut normal_keymap = Vec::new();
     for mapped in input {
-        normal_keymap.push((string_to_keys(mapped.0), commands.get(mapped.1).expect("command doesnt exist").to_owned()));
+        normal_keymap.push((string_to_keys(mapped.0), commands.get(mapped.1).expect(format!("command doesnt exist: {}", mapped.1).as_str()).to_owned()));
     }
     normal_keymap
 }
 
 impl <'a>DrawingContext<'a> {
-    fn draw_glyph_on_grid(&self, ch: char, pos: (i32, i32), color: (f32, f32, f32)) {
+    fn draw_glyph(&self, ch: char, pos: IVec2, color: Color) {
         let glyph = &self.current_font.glyphs[ch as usize - 32];
         let window_size = self.window.drawable_size();
         let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
-        let pen = ((pos.0 * block_size.0) as f32, (pos.1 * block_size.1) as f32);
+        let pen = (pos.x as f32, pos.y as f32);
 
         unsafe {
             self.gl.bind_texture(glow::TEXTURE_2D, Some(glyph.tex));
             self.gl.uniform_2_f32(self.gl.get_uniform_location(self.text_shader, "offset").as_ref(), pen.0 / window_size.0 as f32, (pen.1 + (glyph.y - glyph.bearing.1) as f32 + 15.0) / window_size.1 as f32);
             self.gl.uniform_2_f32(self.gl.get_uniform_location(self.text_shader, "scale").as_ref(), (glyph.x as f32) / window_size.0 as f32, (-glyph.y as f32) / window_size.1 as f32);
-            self.gl.uniform_4_f32(self.gl.get_uniform_location(self.text_shader, "color").as_ref(), color.0, color.1, color.2, 0.0);
+            self.gl.uniform_4_f32(self.gl.get_uniform_location(self.text_shader, "color").as_ref(), color.r, color.g, color.b, 1.0);
             self.gl.draw_arrays(glow::TRIANGLES, 0, 6);
         }
     }
+
+    fn draw_glyph_on_grid(&self, ch: char, pos: (i32, i32), color: (f32, f32, f32)) {
+        let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
+        let pen = ((pos.0 * block_size.0) as i32, (pos.1 * block_size.1) as i32);
+
+        self.draw_glyph(ch, IVec2 { x: pen.0, y: pen.1 }, Color { r: color.0, g: color.1, b: color.2 });
+    }
+}
+
+#[derive(Clone)]
+enum EditorOperation<'a> {
+    Simple(&'a dyn Fn (&mut EditorState)),
+    Motion(&'a dyn Fn (&mut EditorState, IVec2) -> Position),
 }
 
 fn main() {
@@ -762,46 +919,67 @@ fn main() {
     let mut editor = EditorState {
         filename: None,
         contents: None,
-        cursor: (0, 0),
+        view: IVec2::new(0, 0),
+        cursor: IVec2::new(0, 0),
         mode: EditorMode::Normal,
+        argument: String::new(),
         drawing_context: &drawing_context,
     };
 
-    let fns = [EditorState::move_left, EditorState::move_right_normal, EditorState::move_down, EditorState::move_up];
-    let mut commands: HashMap<&str, &dyn Fn(&mut EditorState)> = HashMap::new();
-    commands.insert("move_left",  &| a | a.move_left());
-    commands.insert("move_right", &| a | a.move_right_normal());
-    commands.insert("move_up",    &| a | a.move_up());
-    commands.insert("move_down",  &| a | a.move_down());
-    commands.insert("open_below",  &| a | a.open_below());
-    commands.insert("open_above",  &| a | a.open_above());
-    commands.insert("insert",  &| a | a.insert_mode());
-    commands.insert("insert_after",  &| a | a.insert_mode_after());
-    commands.insert("move_word",  &| a | a.move_word());
-    commands.insert("move_word_backwards",  &| a | a.move_word_backwards());
-    commands.insert("backspace",  &| a | a.backspace());
-    commands.insert("newline_at_cursor",  &| a | a.newline_at_cursor());
-    commands.insert("normal_mode",  &| a | a.normal_mode());
-    commands.insert("save_file",  &| a | a.save_file());
+    let mut commands: HashMap<&str, EditorOperation> = HashMap::new();
+    commands.insert("left",  EditorOperation::Motion(&| a, b | a.left(b)));
+    commands.insert("right", EditorOperation::Motion(&| a, b | a.right(b)));
+    commands.insert("up", EditorOperation::Motion(   &| a, b | a.up(b)));
+    commands.insert("down", EditorOperation::Motion( &| a, b | if matches!(a.mode, EditorMode::OperatorPending(..)) {
+            a.down_whole_line(b)
+        } else {
+            a.down(b)
+        }));
+    commands.insert("open_below", EditorOperation::Simple( &| a | a.open_below()));
+    commands.insert("open_above", EditorOperation::Simple( &| a | a.open_above()));
+    commands.insert("insert", EditorOperation::Simple( &| a | a.insert_mode()));
+    commands.insert("insert_after", EditorOperation::Simple( &| a | a.insert_mode_after()));
+    commands.insert("word", EditorOperation::Motion( &| a, b | a.next_word(b)));
+    commands.insert("word_backwards", EditorOperation::Motion( &| a, b | a.previous_word(b)));
+    commands.insert("backspace", EditorOperation::Simple( &| a | a.backspace()));
+    commands.insert("newline_at_cursor", EditorOperation::Simple( &| a | a.newline_at_cursor()));
+    commands.insert("normal_mode", EditorOperation::Simple( &| a | a.normal_mode()));
+    commands.insert("save_file", EditorOperation::Simple( &| a | a.save_file()));
+    commands.insert("open_file_mode", EditorOperation::Simple( &| a | a.open_file_mode()));
+    commands.insert("move_to_line_end_normal", EditorOperation::Simple( &| a | a.move_to_line_end_normal()));
+    commands.insert("move_to_line_start", EditorOperation::Simple( &| a | a.move_to_line_start()));
+    commands.insert("delete_mode", EditorOperation::Simple( &| a | a.delete_mode()));
 
     let normal_keymap = parse_keymap(&commands, &[
-        ("j", "move_left"),
-        ("k", "move_down"),
-        ("l", "move_up"),
-        (";", "move_right"),
-        ("u", "open_below"),
-        ("U", "open_above"),
-        ("i", "insert"),
+        // TODO translate move commands into the mode-appropriate versions
+        // specific versions will be accessible through nmove_left omove_left etc.
+        ("n", "left"),
+        ("e", "down"),
+        ("i", "up"),
+        ("o", "right"),
+        ("l", "open_below"),
+        ("L", "open_above"),
+        ("u", "insert"),
         ("a", "insert_after"),
-        ("w", "move_word"),
-        ("t", "move_word_backwards"),
-        ("spc d", "save_file")
+        ("w", "word"),
+        ("b", "word_backwards"),
+        ("spc s", "save_file"),
+        ("spc spc", "open_file_mode"),
+        ("g o", "move_to_line_end_normal"),
+        ("g n", "move_to_line_start"),
+        ("d", "delete_mode")
     ]);
 
     let insert_keymap = parse_keymap(&commands, &[
         ("ret", "newline_at_cursor"),
         ("bsp", "backspace"),
-        ("caps", "normal_mode"),
+        ("esc", "normal_mode"),
+    ]);
+
+    let operator_keymap = parse_keymap(&commands, &[
+        ("w", "word"),
+        ("b", "word_backwards"),
+        ("e", "down"),
     ]);
 
     editor.load_file("fort.txt");
@@ -816,20 +994,41 @@ fn main() {
                 sdl2::event::Event::Quit { .. } => quit = true,
                 Event::KeyDown { timestamp, window_id, keycode, scancode, keymod, repeat } => {
                     let key = Key {
-                        scancode: scancode.unwrap(),
+                        scancode: keycode.unwrap(),
                         mods: keymod
                     };
 
                     current_command.push(key.clone());
                     println!("{:?}", current_command);
-                    fn match_current_command(editor: &mut EditorState, keymap: &Vec<(Vec<Key>, &dyn Fn(&mut EditorState))>, current_command: &mut Vec<Key>) {
+                    fn match_current_command(editor: &mut EditorState, keymap: &Vec<(Vec<Key>, EditorOperation)>, current_command: &mut Vec<Key>) {
                         let mut found = false;
                         for m in keymap.iter() {
                             if m.0.len() >= current_command.len() && &m.0[..current_command.len()] == current_command {
                                 found = true;
                             }
                             if &m.0 == current_command {
-                                m.1(editor);
+                                match m.1 {
+                                    EditorOperation::Simple(f) => {
+                                        f(editor);
+                                    }
+                                    EditorOperation::Motion(f) => {
+                                        let pos = f(editor, editor.cursor.clone());
+                                        println!("{:?}", pos);
+                                        match editor.mode {
+                                            EditorMode::Normal => {
+                                                // clamp cursor pos
+                                                editor._move(pos);
+                                            }
+                                            EditorMode::OperatorPending(f_) => {
+                                                f_(editor, pos);
+                                                editor.normal_mode();
+                                            }
+                                            _ =>  {
+                                                editor._move(pos);
+                                            }
+                                        }
+                                    }
+                                }
                                 current_command.clear();
                             }
                         }
@@ -844,11 +1043,18 @@ fn main() {
                         EditorMode::Insert => {
                             match_current_command(&mut editor, &insert_keymap, &mut current_command);
                         }
+                        EditorMode::OperatorPending(f) => {
+                            match_current_command(&mut editor, &operator_keymap, &mut current_command);
+                        }
+                        _ => {}
                     }
                 }
                 Event::TextInput { timestamp, window_id, text } => {
-                    if editor.mode == EditorMode::Insert {
-                        editor.insert(&text);
+                    match editor.mode {
+                        EditorMode::Insert =>{
+                            editor.insert(&text);
+                        }
+                        _ => {}
                     }
                 }
                 Event::Window { win_event, .. } => {
@@ -884,16 +1090,24 @@ fn main() {
 
             let block_size = (max_advance as i32 / 2 as i32, max_advance as i32);
 
-            let cursor_size = (match editor.mode {
-                EditorMode::Normal => { max_advance as i32 / 2 as i32 }
-                EditorMode::Insert => { 2 }
+            let cursor_mode = match editor.mode {
+                EditorMode::Normal => { CursorMode::Block },
+                EditorMode::Insert => { CursorMode::Bar },
+                EditorMode::OperatorPending(_) => { CursorMode::Block },
+                EditorMode::ArgumentPending(_, _) => { CursorMode::Bar }
+            };
+
+            let cursor_size = (match cursor_mode {
+                CursorMode::Block => { max_advance as i32 / 2 as i32 }
+                CursorMode::Bar => { 2 }
+                _ => { 2 }
             }, max_advance as i32);
 
             // println!("{}", max_advance);
 
             let pen_x = 5;
 
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.0 as i32 + pen_x as i32 * block_size.0) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * editor.cursor.1) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * editor.cursor.y) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.0) as f32 / window_size.0 as f32, (cursor_size.1) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), 0.38, 0.68, 0.93, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
@@ -903,7 +1117,7 @@ fn main() {
 
             if let Some(ref contents) = editor.contents {
                 for i in 0..(window_size.1 as i32 / block_size.1).min(contents.len() as i32) {
-                    let (line_num, color) = if editor.cursor.1 - i == 0 { (editor.cursor.1 + 1, white) } else { (editor.cursor.1 - i, gutter_gray) };
+                    let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, white) } else { (editor.cursor.y - i, gutter_gray) };
                     let line_str = line_num.abs().to_string();
                     for (p, ch) in line_str.chars().rev().enumerate() {
                         drawing_context.draw_glyph_on_grid(ch, ((pen_x - 2) - p as i32, i as i32), color);
@@ -926,6 +1140,18 @@ fn main() {
                     pen.1 += 1;
                     // pen.1 += max_advance as f32;
                     pen.0 = pen_x;
+                }
+            }
+            if let EditorMode::ArgumentPending(ref query_str, _) = editor.mode {
+                pen.1 = window_size.1 as i32 - max_advance as i32;
+                pen.0 = 0;
+                for i in query_str.chars() {
+                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, Color { r: 255.0, g: 255.0, b: 255.0 });
+                    pen.0 += max_advance as i32 / 2;
+                }
+                for i in editor.argument.chars() {
+                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, Color { r: 255.0, g: 255.0, b: 255.0 });
+                    pen.0 += max_advance as i32 / 2;
                 }
             }
 

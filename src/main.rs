@@ -206,14 +206,16 @@ struct Glyph {
 enum CursorMode {
     Block,
     Bar,
+    Half,
     Underline
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Position {
     Range(IVec2, IVec2),
     Block(IVec2, IVec2),
-    Lines(i32, i32)
+    Lines(i32, i32),
+    Point(IVec2)
 }
 
 enum Argument {
@@ -224,7 +226,7 @@ enum EditorMode {
     Normal,
     Insert,
     OperatorPending(fn(&mut EditorState, Position)),
-    ArgumentPending(String, fn(&mut EditorState, &str))
+    ArgumentPending(String, fn(&mut EditorState))
 }
 
 struct EditorState<'a, 'b> {
@@ -234,13 +236,15 @@ struct EditorState<'a, 'b> {
     cursor: IVec2,
     mode: EditorMode,
     argument: String,
+    command_amount: Option<i32>,
     drawing_context: &'a DrawingContext<'b>,
 }
 
 impl <'a, 'b>EditorState<'a, 'b> {
-    fn load_file(&mut self, filename: &str) {
-        self.filename = Some(filename.to_string());
-        self.contents = Some(std::fs::read_to_string(filename).unwrap().lines().map(|a| a.to_owned()).collect());
+    fn load_file(&mut self, _filename: &str) {
+        let filename = _filename.replace("~", &std::env::var("HOME").unwrap());
+        self.contents = Some(std::fs::read_to_string(&filename).unwrap().lines().map(|a| a.to_owned()).collect());
+        self.filename = Some(filename);
         self.view = IVec2::new(0, 0);
         self.cursor = IVec2::new(0, 0);
         self.mode = EditorMode::Normal;
@@ -262,43 +266,45 @@ impl <'a, 'b>EditorState<'a, 'b> {
         }
     }
 
-    fn arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState, &str)) {
+    fn arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState)) {
         self.mode = EditorMode::ArgumentPending(query_text.to_string(), callback);
         self.drawing_context.video.text_input().start();
     }
 
     fn open_file_mode(&mut self) {
-        self.arg_pending_mode("open file: ", |a, b| a.load_file(b));
+        self.arg_pending_mode("open file: ", |a| a.load_file(a.argument.clone().as_str()));
     }
 
     fn left(&self, cursor: IVec2) -> Position {
         if cursor.x > 0 {
-            let pos = IVec2::new(cursor.x - 1, cursor.y);
-            return Position::Range(cursor, pos);
+            return Position::Point(IVec2::new(cursor.x - 1, cursor.y));
         }
-        return Position::Range(cursor.clone(), cursor);
+        return Position::Point(cursor);
     }
 
     fn right(&self, cursor: IVec2) -> Position {
         if let Some(ref contents) = self.contents {
-            if self.cursor.x < contents[cursor.y as usize].len() as i32 - 1 {
-                let pos = IVec2::new(cursor.x + 1, cursor.y);
-                return Position::Range(cursor, pos);
+            if self.cursor.x < contents[cursor.y as usize].len() as i32 {
+                return Position::Point(IVec2::new(cursor.x + 1, cursor.y));
             }
         }
-        return Position::Range(cursor.clone(), cursor)
+        return Position::Point(cursor)
     }
 
     fn up(&mut self, cursor: IVec2) -> Position {
         if cursor.y > 0 {
             if self.get_line(cursor.y - 1).len() == 0 {
-                return Position::Range(cursor.clone(), IVec2::new(0, cursor.y - 1));
+                return Position::Point(IVec2::new(0, cursor.y - 1));
             } else if cursor.x >= self.get_line(cursor.y - 1).len() as i32 {
-                return Position::Range(cursor.clone(), IVec2::new(self.get_line(cursor.y - 1).len() as i32 - 1, cursor.y - 1));
+                return Position::Point(IVec2::new(self.get_line(cursor.y - 1).len() as i32 - 1, cursor.y - 1));
             }
-            return Position::Range(cursor.clone(), IVec2::new(cursor.x, cursor.y - 1));
+            return Position::Point(IVec2::new(cursor.x, cursor.y - 1));
         }
-        return Position::Range(cursor.clone(), cursor);
+        return Position::Point(cursor);
+    }
+
+    fn up_whole_line(&mut self, cursor: IVec2) -> Position {
+        return Position::Lines(cursor.y, cursor.y - 1);
     }
 
     // i need to fix this syntax somehow
@@ -308,21 +314,35 @@ impl <'a, 'b>EditorState<'a, 'b> {
                 let next_line = self.get_line(cursor.y + 1);
                 if cursor.x > next_line.len() as i32 {
                     if next_line.len() == 0 {
-                        return Position::Range(cursor.clone(), IVec2::new(0, cursor.y + 1));
+                        return Position::Point(IVec2::new(0, cursor.y + 1));
                     }
-                    return Position::Range(cursor.clone(), IVec2::new(next_line.len() as i32, cursor.y + 1));
+                    return Position::Point(IVec2::new(next_line.len() as i32, cursor.y + 1));
                 }
-                return Position::Range(cursor.clone(), IVec2::new(cursor.x, cursor.y + 1));
+                return Position::Point(IVec2::new(cursor.x, cursor.y + 1));
             }
         }
-        return Position::Range(cursor.clone(), cursor);
+        return Position::Point(cursor);
     }
 
     fn down_whole_line(&mut self, cursor: IVec2) -> Position {
-        if let Some(ref contents) = self.contents {
-            return Position::Lines(cursor.y, cursor.y + 1);
+        return Position::Lines(cursor.y, cursor.y + 1);
+    }
+
+    fn move_part(&self, pos: &Position) -> IVec2 {
+        match pos {
+            Position::Range(_, b) => {
+                b.clone()
+            }
+            Position::Block(_, b) => {
+                b.clone()
+            }
+            Position::Lines(_, b) => {
+                IVec2::new(self.cursor.x, *b)
+            }
+            Position::Point(a) => {
+                a.clone()
+            }
         }
-        return Position::Range(cursor.clone(), cursor);
     }
 
     fn _move(&mut self, pos: Position) {
@@ -334,7 +354,10 @@ impl <'a, 'b>EditorState<'a, 'b> {
                 self.cursor = b;
             }
             Position::Lines(_, b) => {
-                self.cursor.x = b;
+                self.cursor.y = b;
+            }
+            Position::Point(a) => {
+                self.cursor = a;
             }
         }
     }
@@ -370,12 +393,28 @@ impl <'a, 'b>EditorState<'a, 'b> {
         self.cursor.x = 0;
     }
 
-    fn move_to_line_end_normal(&mut self) {
-        self.cursor.x = self.get_current_line().len() as i32 - 1;
+    fn line_end(&self, cursor: IVec2) -> Position {
+        return Position::Point(IVec2::new(self.get_line(cursor.y).len() as i32, cursor.y));
+    }
+
+    fn line_start(&self, cursor: IVec2) -> Position {
+        return Position::Point(IVec2::new(0, cursor.y));
+    }
+
+    fn first_line(&self, cursor: IVec2) -> Position {
+        return Position::Point(IVec2::new(cursor.x, 0));
+    }
+
+    fn last_line(&self, cursor: IVec2) -> Position {
+        if let Some(ref contents) = self.contents {
+            return Position::Point(IVec2::new(cursor.x, contents.len() as i32 - 1));
+        }
+        return Position::Point(cursor);
     }
 
     fn move_to_line_end(&mut self) {
-        self.cursor.x = self.get_current_line().len() as i32;
+        let pos = self.line_end(self.cursor.clone());
+        self._move(pos);
     }
 
     fn get_current_line_mut(&mut self) -> &mut String {
@@ -394,16 +433,11 @@ impl <'a, 'b>EditorState<'a, 'b> {
         }
     }
 
-    fn get_current_line(&self) -> &str {
-        if let Some(ref contents) = self.contents {
-            return &contents[self.cursor.y as usize];
-        } else {
-            panic!("no file loaded");
-        }
-    }
-
     fn next_word(&self, cursor: IVec2) -> Position {
-        let line = self.get_current_line();
+        let line = self.get_line(cursor.y);
+        if line.len() == 0 {
+            return Position::Point(cursor);
+        }
         let alpha = line.as_bytes()[cursor.x as usize].is_ascii_alphanumeric();
         let mut first_word = alpha;
         for (i, v) in line.chars().skip(cursor.x as usize + 1).enumerate() {
@@ -423,17 +457,20 @@ impl <'a, 'b>EditorState<'a, 'b> {
     }
 
     fn previous_word(&mut self, cursor: IVec2) -> Position {
-        let line = self.get_current_line();
-        let alpha = line.as_bytes()[cursor.x as usize].is_ascii_alphanumeric();
-        let mut first_word = alpha;
-        for (i, v) in line.chars().rev().skip(line.len() - (cursor.x as usize)).enumerate() {
+        let line = self.get_line(cursor.y);
+        if line.len() == 0 {
+            return Position::Point(cursor);
+        }
+        let alpha = line.as_bytes()[cursor.x as usize - 1].is_ascii_alphanumeric();
+        let mut first_word = !alpha;
+        for (i, v) in line.chars().rev().skip(line.len() - (cursor.x as usize + 1)).enumerate() {
             if first_word {
                 if !v.is_alphanumeric() {
                     first_word = false;
                 }
             } else {
-                if v.is_alphanumeric() {
-                    let pos = IVec2::new(cursor.x - i as i32 - 1, cursor.y);
+                if !v.is_alphanumeric() {
+                    let pos = IVec2::new(cursor.x - i as i32 + 1, cursor.y);
                     return Position::Range(cursor.clone(), pos);
                 }
             }
@@ -519,12 +556,37 @@ impl <'a, 'b>EditorState<'a, 'b> {
         self.insert_mode();
     }
 
-    fn normal_mode(&mut self) {
-        if self.get_current_line().len() == 0 {
-            self.cursor.x = 0;
-        } else if self.cursor.x >= self.get_current_line().len() as i32 {
-            self.cursor.x = self.get_current_line().len() as i32 - 1;
+    fn normalize_pos_ivec(&self, mut pos: IVec2) -> IVec2 {
+        if let Some(ref contents) = self.contents {
+            pos.y = pos.y.min(contents.len().checked_sub(1).unwrap_or(0) as i32);
         }
+        IVec2::new(pos.x.clamp(0, self.get_line(pos.y).len().checked_sub(1).unwrap_or(0) as i32), pos.y)
+    }
+
+    fn normalize_pos(&self, pos: Position) -> Position {
+        match pos {
+            Position::Range(a, b) => {
+                Position::Range(a, self.normalize_pos_ivec(b))
+            }
+            Position::Block(a, b) => {
+                Position::Block(a, self.normalize_pos_ivec(b))
+            }
+            Position::Lines(a, b) => {
+                Position::Lines(a, b)
+            }
+            Position::Point(a) => {
+                Position::Point(self.normalize_pos_ivec(a))
+            }
+        }
+    }
+
+    fn normal_mode(&mut self) {
+        // if self.get_current_line().len() == 0 {
+        //     self.cursor.x = 0;
+        // } else if self.cursor.x >= self.get_current_line().len() as i32 {
+        //     self.cursor.x = self.get_current_line().len() as i32 - 1;
+        // }
+        self.cursor = self.normalize_pos_ivec(self.cursor.clone());
         self.mode = EditorMode::Normal;
         self.drawing_context.video.text_input().stop();
     }
@@ -541,14 +603,25 @@ impl <'a, 'b>EditorState<'a, 'b> {
                             contents.remove(start.y as usize);
                         }
                     } else {
-                        contents[start.y as usize] = contents[start.y as usize].chars().take(start.x as usize).chain(contents[start.y as usize].chars().skip(end.x as usize)).collect();
+                        if start.x < end.x {
+                            contents[start.y as usize] = contents[start.y as usize].chars().take(start.x as usize).chain(contents[start.y as usize].chars().skip(end.x as usize)).collect();
+                        } else {
+                            contents[start.y as usize] = contents[start.y as usize].chars().take(end.x as usize).chain(contents[start.y as usize].chars().skip(start.x as usize)).collect();
+                        }
                     }
                 }
             }
             Position::Lines(start, end) => {
                 if let Some(ref mut contents) = self.contents {
-                    for _ in (start).max(0)..=(end).min(contents.len() as i32 - 1) {
-                        contents.remove(start as usize);
+                    let smaller = start.min(end);
+                    let bigger = start.max(end);
+                    for _ in (smaller).max(0)..=(bigger).min(contents.len() as i32 - 1) {
+                        // TODO fix this in the range somehow
+                        if contents.len() == 1 {
+                            contents[0].clear();
+                            return;
+                        }
+                        contents.remove(smaller as usize);
                     }
                 }
             }
@@ -839,7 +912,7 @@ fn main() {
     face.set_pixel_sizes(0, 15).unwrap();
 
     let mut glyphs = Vec::new();
-    let mut max_advance = face.max_advance_height() >> 6;
+    let max_advance = face.max_advance_height() >> 6;
     for i in 32..128 {
         face.load_char(i, LoadFlag::DEFAULT).unwrap();
 
@@ -900,10 +973,14 @@ fn main() {
     let gutter_gray  = hex_code_to_color("4b5263");
     let comment_gray = hex_code_to_color("5c6370");
 
+    let background_color = black;
+    let text_color = white;
+    let unfocused_text_color = gutter_gray;
+
     unsafe {
         drawing_context.gl.use_program(Some(text_shader));
-        let background = srgb_to_rgb(black);
-        drawing_context.gl.clear_color(background.0, background.1, background.2, 1.0);
+        let background_color_rgb = srgb_to_rgb(background_color);
+        drawing_context.gl.clear_color(background_color_rgb.0, background_color_rgb.1, background_color_rgb.2, 1.0);
 
         drawing_context.gl.enable(glow::FRAMEBUFFER_SRGB);
     }
@@ -924,31 +1001,39 @@ fn main() {
         mode: EditorMode::Normal,
         argument: String::new(),
         drawing_context: &drawing_context,
+        command_amount: None,
     };
-
     let mut commands: HashMap<&str, EditorOperation> = HashMap::new();
     commands.insert("left",  EditorOperation::Motion(&| a, b | a.left(b)));
     commands.insert("right", EditorOperation::Motion(&| a, b | a.right(b)));
-    commands.insert("up", EditorOperation::Motion(   &| a, b | a.up(b)));
-    commands.insert("down", EditorOperation::Motion( &| a, b | if matches!(a.mode, EditorMode::OperatorPending(..)) {
+    commands.insert("up", EditorOperation::Motion(&| a, b | if matches!(a.mode, EditorMode::OperatorPending(..)) {
+            a.up_whole_line(b)
+        } else {
+            a.up(b)
+        }));
+    commands.insert("down", EditorOperation::Motion(&| a, b | if matches!(a.mode, EditorMode::OperatorPending(..)) {
             a.down_whole_line(b)
         } else {
             a.down(b)
         }));
     commands.insert("open_below", EditorOperation::Simple( &| a | a.open_below()));
     commands.insert("open_above", EditorOperation::Simple( &| a | a.open_above()));
-    commands.insert("insert", EditorOperation::Simple( &| a | a.insert_mode()));
-    commands.insert("insert_after", EditorOperation::Simple( &| a | a.insert_mode_after()));
-    commands.insert("word", EditorOperation::Motion( &| a, b | a.next_word(b)));
-    commands.insert("word_backwards", EditorOperation::Motion( &| a, b | a.previous_word(b)));
-    commands.insert("backspace", EditorOperation::Simple( &| a | a.backspace()));
-    commands.insert("newline_at_cursor", EditorOperation::Simple( &| a | a.newline_at_cursor()));
-    commands.insert("normal_mode", EditorOperation::Simple( &| a | a.normal_mode()));
-    commands.insert("save_file", EditorOperation::Simple( &| a | a.save_file()));
-    commands.insert("open_file_mode", EditorOperation::Simple( &| a | a.open_file_mode()));
-    commands.insert("move_to_line_end_normal", EditorOperation::Simple( &| a | a.move_to_line_end_normal()));
-    commands.insert("move_to_line_start", EditorOperation::Simple( &| a | a.move_to_line_start()));
-    commands.insert("delete_mode", EditorOperation::Simple( &| a | a.delete_mode()));
+    commands.insert("insert", EditorOperation::Simple(&| a | a.insert_mode()));
+    commands.insert("insert_after", EditorOperation::Simple(&| a | a.insert_mode_after()));
+    commands.insert("word", EditorOperation::Motion(&| a, b | a.next_word(b)));
+    commands.insert("word_backwards", EditorOperation::Motion(&| a, b | a.previous_word(b)));
+    commands.insert("backspace", EditorOperation::Simple(&| a | a.backspace()));
+    commands.insert("newline_at_cursor", EditorOperation::Simple(&| a | a.newline_at_cursor()));
+    commands.insert("normal_mode", EditorOperation::Simple(&| a | a.normal_mode()));
+    commands.insert("save_file", EditorOperation::Simple(&| a | a.save_file()));
+    commands.insert("open_file_mode", EditorOperation::Simple(&| a | a.open_file_mode()));
+    commands.insert("line_start", EditorOperation::Motion(&| a, b | a.line_start(b)));
+    commands.insert("line_end", EditorOperation::Motion(&| a, b | a.line_end(b)));
+    commands.insert("first_line", EditorOperation::Motion(&| a, b | a.first_line(b)));
+    commands.insert("last_line", EditorOperation::Motion(&| a, b | a.last_line(b)));
+    commands.insert("delete_mode", EditorOperation::Simple(&| a | a.delete_mode()));
+    commands.insert("run_arg", EditorOperation::Simple(&|a| if let EditorMode::ArgumentPending(_, f) = a.mode { f(a); a.normal_mode() }));
+    commands.insert("bsp_arg", EditorOperation::Simple(&|a| { a.argument.pop(); }));
 
     let normal_keymap = parse_keymap(&commands, &[
         // TODO translate move commands into the mode-appropriate versions
@@ -963,11 +1048,13 @@ fn main() {
         ("a", "insert_after"),
         ("w", "word"),
         ("b", "word_backwards"),
+        ("d", "delete_mode"),
         ("spc s", "save_file"),
         ("spc spc", "open_file_mode"),
-        ("g o", "move_to_line_end_normal"),
-        ("g n", "move_to_line_start"),
-        ("d", "delete_mode")
+        ("g n", "line_start"),
+        ("g o", "line_end"),
+        ("g e", "last_line"),
+        ("g i", "first_line"),
     ]);
 
     let insert_keymap = parse_keymap(&commands, &[
@@ -980,6 +1067,14 @@ fn main() {
         ("w", "word"),
         ("b", "word_backwards"),
         ("e", "down"),
+        ("i", "up"),
+        ("g e", "last_line"),
+        ("g i", "first_line"),
+    ]);
+
+    let argument_keymap = parse_keymap(&commands, &[
+        ("ret", "run_arg"),
+        ("bsp", "bsp_arg")
     ]);
 
     editor.load_file("fort.txt");
@@ -1017,11 +1112,16 @@ fn main() {
                                         match editor.mode {
                                             EditorMode::Normal => {
                                                 // clamp cursor pos
-                                                editor._move(pos);
+                                                let clamped_pos = editor.normalize_pos(pos);
+                                                editor._move(clamped_pos);
                                             }
                                             EditorMode::OperatorPending(f_) => {
-                                                f_(editor, pos);
+                                                f_(editor, pos.clone());
                                                 editor.normal_mode();
+                                                let move_part = editor.move_part(&pos);
+                                                if move_part.x < editor.cursor.x || move_part.y < editor.cursor.y {
+                                                    editor._move(pos);
+                                                }
                                             }
                                             _ =>  {
                                                 editor._move(pos);
@@ -1034,6 +1134,9 @@ fn main() {
                         }
                         if !found {
                             current_command.clear();
+                            if matches!(editor.mode, EditorMode::OperatorPending(..)) {
+                                editor.normal_mode();
+                            }
                         }
                     }
                     match editor.mode {
@@ -1046,6 +1149,9 @@ fn main() {
                         EditorMode::OperatorPending(f) => {
                             match_current_command(&mut editor, &operator_keymap, &mut current_command);
                         }
+                        EditorMode::ArgumentPending(_, f) => {
+                            match_current_command(&mut editor, &argument_keymap, &mut current_command);
+                        }
                         _ => {}
                     }
                 }
@@ -1053,6 +1159,9 @@ fn main() {
                     match editor.mode {
                         EditorMode::Insert =>{
                             editor.insert(&text);
+                        }
+                        EditorMode::ArgumentPending(..) => {
+                            editor.argument.push_str(&text);
                         }
                         _ => {}
                     }
@@ -1093,22 +1202,28 @@ fn main() {
             let cursor_mode = match editor.mode {
                 EditorMode::Normal => { CursorMode::Block },
                 EditorMode::Insert => { CursorMode::Bar },
-                EditorMode::OperatorPending(_) => { CursorMode::Block },
+                EditorMode::OperatorPending(_) => { CursorMode::Underline },
                 EditorMode::ArgumentPending(_, _) => { CursorMode::Bar }
             };
 
-            let cursor_size = (match cursor_mode {
-                CursorMode::Block => { max_advance as i32 / 2 as i32 }
-                CursorMode::Bar => { 2 }
-                _ => { 2 }
-            }, max_advance as i32);
+            let cursor_size = match cursor_mode {
+                CursorMode::Block => { IVec2::new(block_size.0, block_size.1) }
+                CursorMode::Underline => { IVec2::new(block_size.0, 4) }
+                CursorMode::Bar => { IVec2::new(2, block_size.1) }
+                _ => { IVec2::new(2, block_size.1) }
+            };
+
+            let cursor_offset = match cursor_mode {
+                CursorMode::Underline => { IVec2::new(0, block_size.1 - 4) }
+                _ => { IVec2::new(0, 0) }
+            };
 
             // println!("{}", max_advance);
 
             let pen_x = 5;
 
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * editor.cursor.y) as f32 / window_size.1 as f32);
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.0) as f32 / window_size.0 as f32, (cursor_size.1) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * editor.cursor.y + cursor_offset.y) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.x) as f32 / window_size.0 as f32, (cursor_size.y) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), 0.38, 0.68, 0.93, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
@@ -1117,7 +1232,7 @@ fn main() {
 
             if let Some(ref contents) = editor.contents {
                 for i in 0..(window_size.1 as i32 / block_size.1).min(contents.len() as i32) {
-                    let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, white) } else { (editor.cursor.y - i, gutter_gray) };
+                    let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, text_color) } else { (editor.cursor.y - i, unfocused_text_color) };
                     let line_str = line_num.abs().to_string();
                     for (p, ch) in line_str.chars().rev().enumerate() {
                         drawing_context.draw_glyph_on_grid(ch, ((pen_x - 2) - p as i32, i as i32), color);
@@ -1133,7 +1248,7 @@ fn main() {
             if let Some(ref lines) = editor.contents {
                 for line in lines {
                     for i in line.chars() {
-                        drawing_context.draw_glyph_on_grid(i, pen, white);
+                        drawing_context.draw_glyph_on_grid(i, pen, text_color);
                         pen.0 += 1;
 
                     }

@@ -1,0 +1,4 @@
+#+title: Todo
+
+* search
+* different programs to run (file selection, file manager)

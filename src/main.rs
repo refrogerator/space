@@ -362,6 +362,36 @@ impl <'a, 'b>EditorState<'a, 'b> {
         }
     }
 
+    fn view_down(&mut self, amt: i32) {
+        if let Some(ref contents) = self.contents {
+            if self.view.y + amt >= contents.len() as i32 - 1 {
+                self.view.y = contents.len() as i32 - 1;
+                for _ in 0..(contents.len() as i32 - 1) - self.cursor.y {
+                    self.move_down();
+                }
+            } else {
+                for _ in 0..amt {
+                    self.move_down();
+                }
+                self.view.y += amt;
+            }
+        }
+    }
+
+    fn view_up(&mut self, amt: i32) {
+        if self.view.y - amt < 0 {
+            // for _ in 0..self.view.y {
+            //     self.move_up();
+            // }
+            self.view.y = 0;
+        } else {
+            // for _ in 0..amt {
+            //     self.move_up();
+            // }
+            self.view.y -= amt;
+        }
+    }
+
     fn move_left(&mut self) {
         let pos = self.left(self.cursor.clone());
         self._move(pos);
@@ -458,7 +488,7 @@ impl <'a, 'b>EditorState<'a, 'b> {
 
     fn previous_word(&mut self, cursor: IVec2) -> Position {
         let line = self.get_line(cursor.y);
-        if line.len() == 0 {
+        if line.len() == 0 || cursor.x == 0 {
             return Position::Point(cursor);
         }
         let alpha = line.as_bytes()[cursor.x as usize - 1].is_ascii_alphanumeric();
@@ -1034,6 +1064,8 @@ fn main() {
     commands.insert("delete_mode", EditorOperation::Simple(&| a | a.delete_mode()));
     commands.insert("run_arg", EditorOperation::Simple(&|a| if let EditorMode::ArgumentPending(_, f) = a.mode { f(a); a.normal_mode() }));
     commands.insert("bsp_arg", EditorOperation::Simple(&|a| { a.argument.pop(); }));
+    commands.insert("view_up",  EditorOperation::Simple(&|a| a.view_up(5)));
+    commands.insert("view_down",  EditorOperation::Simple(&|a| a.view_down(5)));
 
     let normal_keymap = parse_keymap(&commands, &[
         // TODO translate move commands into the mode-appropriate versions
@@ -1042,6 +1074,8 @@ fn main() {
         ("e", "down"),
         ("i", "up"),
         ("o", "right"),
+        ("C-e", "view_down"),
+        ("C-i", "view_up"),
         ("l", "open_below"),
         ("L", "open_above"),
         ("u", "insert"),
@@ -1088,6 +1122,12 @@ fn main() {
             match event {
                 sdl2::event::Event::Quit { .. } => quit = true,
                 Event::KeyDown { timestamp, window_id, keycode, scancode, keymod, repeat } => {
+                    match keycode.unwrap() {
+                        Keycode::LAlt | Keycode::LGui | Keycode::LCtrl | Keycode::RGui | Keycode::RAlt | Keycode::LShift | Keycode::RShift | Keycode::RCtrl => {
+                            continue;
+                        }
+                        _ => {}
+                    }
                     let key = Key {
                         scancode: keycode.unwrap(),
                         mods: keymod
@@ -1222,20 +1262,28 @@ fn main() {
 
             let pen_x = 5;
 
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * editor.cursor.y + cursor_offset.y) as f32 / window_size.1 as f32);
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.x) as f32 / window_size.0 as f32, (cursor_size.y) as f32 / window_size.1 as f32);
-            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), 0.38, 0.68, 0.93, 1.0);
+            // drawing_context.gl.use_program(Some(quad_shader));
+
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), 0.0, (block_size.1 * (editor.cursor.y - editor.view.y)) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), 1.0, (block_size.1) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), gutter_gray.0, gutter_gray.1, gutter_gray.2, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * (editor.cursor.y - editor.view.y) + cursor_offset.y) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.x) as f32 / window_size.0 as f32, (cursor_size.y) as f32 / window_size.1 as f32);
+            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), blue.0, blue.1, blue.2, 1.0);
+            drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
+
+            drawing_context.gl.use_program(Some(text_shader));
             drawing_context.gl.enable(glow::BLEND);
             drawing_context.gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
             if let Some(ref contents) = editor.contents {
-                for i in 0..(window_size.1 as i32 / block_size.1).min(contents.len() as i32) {
+                for i in 0 + editor.view.y..(window_size.1 as i32 / block_size.1 + editor.view.y).min(contents.len() as i32) {
                     let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, text_color) } else { (editor.cursor.y - i, unfocused_text_color) };
                     let line_str = line_num.abs().to_string();
                     for (p, ch) in line_str.chars().rev().enumerate() {
-                        drawing_context.draw_glyph_on_grid(ch, ((pen_x - 2) - p as i32, i as i32), color);
+                        drawing_context.draw_glyph_on_grid(ch, ((pen_x - 2) - p as i32, i as i32 - editor.view.y), color);
                     }
                 }
             }
@@ -1246,7 +1294,7 @@ fn main() {
             let scale = 1.0; //15.0 / 64.0;
 
             if let Some(ref lines) = editor.contents {
-                for line in lines {
+                for line in lines.iter().skip(editor.view.y as usize).take(window_size.1 as usize / block_size.1 as usize) {
                     for i in line.chars() {
                         drawing_context.draw_glyph_on_grid(i, pen, text_color);
                         pen.0 += 1;

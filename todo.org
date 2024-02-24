@@ -2,3 +2,5 @@
 
 * search
 * different programs to run (file selection, file manager)
+* command language (stuff like "view_down 5")
+* undos

@@ -8,6 +8,18 @@ use freetype::face::LoadFlag;
 use sdl2::keyboard::Keycode;
 use sdl2::keyboard::Mod;
 
+use core::str::FromStr;
+
+use syntect::highlighting::ScopeSelector;
+use syntect::highlighting::ScopeSelectors;
+use syntect::highlighting::StyleModifier;
+use syntect::highlighting::Theme;
+use syntect::highlighting::ThemeItem;
+use syntect::highlighting::ThemeSettings;
+use syntect::parsing::SyntaxSet;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet, Style};
+
 fn create_shader(gl: &glow::Context, vert: &str, frag: &str) -> glow::Program {
     unsafe {
         let program = gl.create_program().unwrap();
@@ -80,6 +92,27 @@ struct Color {
     r: f32,
     g: f32,
     b: f32
+}
+
+impl From<syntect::highlighting::Color> for Color {
+    fn from(col: syntect::highlighting::Color) -> Self {
+        Self {
+            r: col.r as f32 / 255.0,
+            g: col.g as f32 / 255.0,
+            b: col.b as f32 / 255.0
+        }
+    }
+}
+
+impl Into<syntect::highlighting::Color> for &Color {
+    fn into(self) -> syntect::highlighting::Color {
+        syntect::highlighting::Color {
+            r: (self.r * 255.0) as u8,
+            g: (self.g * 255.0) as u8,
+            b: (self.b * 255.0) as u8,
+            a: 0
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -852,21 +885,23 @@ struct LoadedFont {
 impl LoadedFont {
 }
 
-fn hex_code_to_color(code: &str) -> (f32, f32, f32) {
+fn hex_code_to_color(code: &str) -> Color {
     let r = u8::from_str_radix(&code[0..2], 16).unwrap();
     let g = u8::from_str_radix(&code[2..4], 16).unwrap();
     let b = u8::from_str_radix(&code[4..6], 16).unwrap();
-    (r as f32 / 255.0,
-     g as f32 / 255.0,
-     b as f32 / 255.0)
+    Color { 
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0
+    }
 }
 
-fn srgb_to_rgb(color: (f32, f32, f32)) -> (f32, f32, f32) {
-    (
-        color.0.powf(2.2),
-        color.1.powf(2.2),
-        color.2.powf(2.2)
-    )
+fn srgb_to_rgb(color: &Color) -> Color {
+    Color {
+        r: color.r.powf(2.2),
+        g: color.g.powf(2.2),
+        b: color.b.powf(2.2)
+    }
 }
 
 struct DrawingContext<'a> {
@@ -887,7 +922,7 @@ fn parse_keymap<'a>(commands: &HashMap<&str, EditorOperation<'a>>, input: &[(&st
 }
 
 impl <'a>DrawingContext<'a> {
-    fn draw_glyph(&self, ch: char, pos: IVec2, color: Color) {
+    fn draw_glyph(&self, ch: char, pos: IVec2, color: &Color) {
         let glyph = &self.current_font.glyphs[ch as usize - 32];
         let window_size = self.window.drawable_size();
         let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
@@ -902,11 +937,11 @@ impl <'a>DrawingContext<'a> {
         }
     }
 
-    fn draw_glyph_on_grid(&self, ch: char, pos: (i32, i32), color: (f32, f32, f32)) {
+    fn draw_glyph_on_grid(&self, ch: char, pos: (i32, i32), color: &Color) {
         let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
         let pen = ((pos.0 * block_size.0) as i32, (pos.1 * block_size.1) as i32);
 
-        self.draw_glyph(ch, IVec2 { x: pen.0, y: pen.1 }, Color { r: color.0, g: color.1, b: color.2 });
+        self.draw_glyph(ch, IVec2 { x: pen.0, y: pen.1 }, color);
     }
 }
 
@@ -990,18 +1025,18 @@ fn main() {
         window,
     };
 
-    let black        = hex_code_to_color("282c34");
-    let white        = hex_code_to_color("abb2bf");
-    let light_red    = hex_code_to_color("e06c75");
-    let dark_red     = hex_code_to_color("be5046");
-    let green        = hex_code_to_color("98c379");
-    let light_yellow = hex_code_to_color("e5c075");
-    let dark_yellow  = hex_code_to_color("d19a66");
-    let blue         = hex_code_to_color("61afef");
-    let magenta      = hex_code_to_color("c678dd");
-    let cyan         = hex_code_to_color("56b6c2");
-    let gutter_gray  = hex_code_to_color("4b5263");
-    let comment_gray = hex_code_to_color("5c6370");
+    let black        = &hex_code_to_color("282c34");
+    let white        = &hex_code_to_color("abb2bf");
+    let light_red    = &hex_code_to_color("e06c75");
+    let dark_red     = &hex_code_to_color("be5046");
+    let green        = &hex_code_to_color("98c379");
+    let light_yellow = &hex_code_to_color("e5c075");
+    let dark_yellow  = &hex_code_to_color("d19a66");
+    let blue         = &hex_code_to_color("61afef");
+    let magenta      = &hex_code_to_color("c678dd");
+    let cyan         = &hex_code_to_color("56b6c2");
+    let gutter_gray  = &hex_code_to_color("4b5263");
+    let comment_gray = &hex_code_to_color("5c6370");
 
     let background_color = black;
     let text_color = white;
@@ -1010,7 +1045,7 @@ fn main() {
     unsafe {
         drawing_context.gl.use_program(Some(text_shader));
         let background_color_rgb = srgb_to_rgb(background_color);
-        drawing_context.gl.clear_color(background_color_rgb.0, background_color_rgb.1, background_color_rgb.2, 1.0);
+        drawing_context.gl.clear_color(background_color_rgb.r, background_color_rgb.g, background_color_rgb.b, 1.0);
 
         drawing_context.gl.enable(glow::FRAMEBUFFER_SRGB);
     }
@@ -1111,7 +1146,29 @@ fn main() {
         ("bsp", "bsp_arg")
     ]);
 
-    editor.load_file("fort.txt");
+    let ps = SyntaxSet::load_defaults_nonewlines();
+
+    let themedef = vec![
+        ("string", green),
+        ("constant.numeric", dark_yellow),
+        ("storage.type, keyword.other", dark_red),
+        ("support.type, entity.name.struct", light_yellow),
+        ("support.macro", magenta),
+        ("support.function, entity.name.function, meta.require, support.function.any-method, variable.function", blue),
+        ("", white)
+    ];
+
+    let theme_items: Vec<ThemeItem> = themedef.iter().map(|def| ThemeItem { scope: ScopeSelectors::from_str(def.0).unwrap(), style: StyleModifier { foreground: Some(def.1.into()), background: None, font_style: None }}).collect();
+
+    let theme = Theme {
+        name: Some("default".to_string()),
+        author: None,
+        settings: ThemeSettings::default(),
+        scopes: theme_items
+    };
+
+    let syntax = ps.find_syntax_by_extension("rs").unwrap();
+    editor.load_file("test.rs");
 
     let mut current_command = Vec::new();
 
@@ -1266,12 +1323,12 @@ fn main() {
 
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), 0.0, (block_size.1 * (editor.cursor.y - editor.view.y)) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), 1.0, (block_size.1) as f32 / window_size.1 as f32);
-            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), gutter_gray.0, gutter_gray.1, gutter_gray.2, 1.0);
+            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), gutter_gray.r, gutter_gray.g, gutter_gray.b, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * (editor.cursor.y - editor.view.y) + cursor_offset.y) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.x) as f32 / window_size.0 as f32, (cursor_size.y) as f32 / window_size.1 as f32);
-            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), blue.0, blue.1, blue.2, 1.0);
+            drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), blue.r, blue.g, blue.b, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
             drawing_context.gl.use_program(Some(text_shader));
@@ -1280,7 +1337,7 @@ fn main() {
 
             if let Some(ref contents) = editor.contents {
                 for i in 0 + editor.view.y..(window_size.1 as i32 / block_size.1 + editor.view.y).min(contents.len() as i32) {
-                    let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, text_color) } else { (editor.cursor.y - i, unfocused_text_color) };
+                    let (line_num, color) = if editor.cursor.y - i == 0 { (editor.cursor.y + 1, &text_color) } else { (editor.cursor.y - i, &unfocused_text_color) };
                     let line_str = line_num.abs().to_string();
                     for (p, ch) in line_str.chars().rev().enumerate() {
                         drawing_context.draw_glyph_on_grid(ch, ((pen_x - 2) - p as i32, i as i32 - editor.view.y), color);
@@ -1294,11 +1351,15 @@ fn main() {
             let scale = 1.0; //15.0 / 64.0;
 
             if let Some(ref lines) = editor.contents {
-                for line in lines.iter().skip(editor.view.y as usize).take(window_size.1 as usize / block_size.1 as usize) {
-                    for i in line.chars() {
-                        drawing_context.draw_glyph_on_grid(i, pen, text_color);
-                        pen.0 += 1;
+                let mut h = HighlightLines::new(syntax, &theme);
 
+                for line in lines.iter().skip(editor.view.y as usize).take(window_size.1 as usize / block_size.1 as usize) {
+                    let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
+                    for range in ranges {
+                        for i in range.1.chars() {
+                            drawing_context.draw_glyph_on_grid(i, pen, &range.0.foreground.into());
+                            pen.0 += 1;
+                        }
                     }
                     pen.1 += 1;
                     // pen.1 += max_advance as f32;
@@ -1309,11 +1370,11 @@ fn main() {
                 pen.1 = window_size.1 as i32 - max_advance as i32;
                 pen.0 = 0;
                 for i in query_str.chars() {
-                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, Color { r: 255.0, g: 255.0, b: 255.0 });
+                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, &Color { r: 255.0, g: 255.0, b: 255.0 });
                     pen.0 += max_advance as i32 / 2;
                 }
                 for i in editor.argument.chars() {
-                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, Color { r: 255.0, g: 255.0, b: 255.0 });
+                    drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, &Color { r: 255.0, g: 255.0, b: 255.0 });
                     pen.0 += max_advance as i32 / 2;
                 }
             }

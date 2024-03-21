@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -7,6 +8,7 @@ use freetype::Library;
 use freetype::face::LoadFlag;
 use sdl2::keyboard::Keycode;
 use sdl2::keyboard::Mod;
+use swash::scale::Source;
 
 use core::str::FromStr;
 
@@ -262,6 +264,10 @@ enum EditorMode {
     ArgumentPending(String, fn(&mut EditorState))
 }
 
+struct EditorConfig {
+    tab_width: i32,
+}
+
 struct EditorState<'a, 'b> {
     contents: Option<Vec<String>>,
     filename: Option<String>,
@@ -271,6 +277,7 @@ struct EditorState<'a, 'b> {
     argument: String,
     command_amount: Option<i32>,
     drawing_context: &'a DrawingContext<'b>,
+    config: EditorConfig
 }
 
 impl <'a, 'b>EditorState<'a, 'b> {
@@ -716,7 +723,7 @@ fn string_to_keys(s: &str) -> Vec<Key> {
         } else {
             _keychord
         };
-        println!("{}, {}", keychord, ctrl);
+        // println!("{}, {}", keychord, ctrl);
         let (scancode, shift) = match keychord {
             "A" => { (Keycode::A, true) },
             "B" => { (Keycode::B, true) },
@@ -879,7 +886,8 @@ fn string_to_keys(s: &str) -> Vec<Key> {
 struct LoadedFont {
     size: i32,
     glyphs: Vec<Glyph>,
-    max_advance: i16,
+    max_advance: (i16, i16),
+    ascent: i32,
 }
 
 impl LoadedFont {
@@ -925,12 +933,15 @@ impl <'a>DrawingContext<'a> {
     fn draw_glyph(&self, ch: char, pos: IVec2, color: &Color) {
         let glyph = &self.current_font.glyphs[ch as usize - 32];
         let window_size = self.window.drawable_size();
-        let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
+        let block_size = self.current_font.max_advance;
         let pen = (pos.x as f32, pos.y as f32);
+        println!("{:?}", pen);
 
         unsafe {
             self.gl.bind_texture(glow::TEXTURE_2D, Some(glyph.tex));
-            self.gl.uniform_2_f32(self.gl.get_uniform_location(self.text_shader, "offset").as_ref(), pen.0 / window_size.0 as f32, (pen.1 + (glyph.y - glyph.bearing.1) as f32 + 15.0) / window_size.1 as f32);
+            // println!("{}", self.current_font.ascent);
+            // println!("{:?}", ((pen.0 + glyph.bearing.0 as f32), (pen.1 + (glyph.y - glyph.bearing.1 + self.current_font.ascent) as f32)));
+            self.gl.uniform_2_f32(self.gl.get_uniform_location(self.text_shader, "offset").as_ref(), (pen.0 + glyph.bearing.0 as f32) / window_size.0 as f32, (pen.1 + (glyph.y + self.current_font.ascent + 4 - glyph.bearing.1) as f32) / window_size.1 as f32);
             self.gl.uniform_2_f32(self.gl.get_uniform_location(self.text_shader, "scale").as_ref(), (glyph.x as f32) / window_size.0 as f32, (-glyph.y as f32) / window_size.1 as f32);
             self.gl.uniform_4_f32(self.gl.get_uniform_location(self.text_shader, "color").as_ref(), color.r, color.g, color.b, 1.0);
             self.gl.draw_arrays(glow::TRIANGLES, 0, 6);
@@ -938,8 +949,8 @@ impl <'a>DrawingContext<'a> {
     }
 
     fn draw_glyph_on_grid(&self, ch: char, pos: (i32, i32), color: &Color) {
-        let block_size = (self.current_font.max_advance as i32 / 2 as i32, self.current_font.max_advance as i32);
-        let pen = ((pos.0 * block_size.0) as i32, (pos.1 * block_size.1) as i32);
+        let block_size = self.current_font.max_advance;
+        let pen = ((pos.0 * block_size.0 as i32) as i32, (pos.1 * block_size.1 as i32) as i32);
 
         self.draw_glyph(ch, IVec2 { x: pen.0, y: pen.1 }, color);
     }
@@ -971,19 +982,44 @@ fn main() {
     let quad_shader = create_shader(&gl, "src/quad.vert", "src/quad.frag");
     let text_shader = create_shader(&gl, "src/quad.vert", "src/text.frag");
 
-    let ft = Library::init().unwrap();
+    let mut scontext = swash::scale::ScaleContext::new();
+    let file = std::fs::read("res/fonts/ttf/JetBrainsMono-Regular.ttf").unwrap();
+    let font_size = 20.;
+    let font = swash::FontRef::from_index(&file, 0).unwrap();
+    let mut scaler = scontext.builder(font).size(font_size).hint(false).build();
 
-    let face = ft.new_face("res/fonts/ttf/JetBrainsMono-Regular.ttf", 0).unwrap();
-    face.set_pixel_sizes(0, 15).unwrap();
+    let mut shape_context = swash::shape::ShapeContext::new();
+    let mut shaper = shape_context.builder(font)
+        .script(swash::text::Script::Latin)
+        .direction(swash::shape::Direction::LeftToRight)
+        .size(font_size)
+        .build();
+
+    println!("chud:{}", scaler.has_color_bitmaps());
+    // println!("front:{:?}", font.localized_strings());
+    // for string in font.localized_strings() {
+    //     println!("[{:?}] {}", string.id(), string.to_string());
+    // }
+
 
     let mut glyphs = Vec::new();
-    let max_advance = face.max_advance_height() >> 6;
+    // let glyph = font.charmap().map(33 as u32);
+    // let bitmap =
+    //     swash::scale::Render::new(&[
+    //     Source::Bitmap(swash::scale::StrikeWith::BestFit),
+    //     Source::Outline
+    // ]).format(swash::zeno::Format::Alpha).render(&mut scaler, glyph).unwrap();
+    let metrics = font.metrics(&[]).scale(15.);
+    println!("{:?}", metrics);
+    let max_advance = (11, 24);
     for i in 32..128 {
-        face.load_char(i, LoadFlag::DEFAULT).unwrap();
-
-        let glyph = face.glyph();
-        glyph.render_glyph(freetype::RenderMode::Normal).unwrap();
-        let bitmap = glyph.bitmap();
+        let glyph = font.charmap().map(i as u32);
+        let bitmap =
+            swash::scale::Render::new(&[
+            Source::Bitmap(swash::scale::StrikeWith::BestFit),
+            Source::Outline
+        ]).format(swash::zeno::Format::Alpha).render(&mut scaler, glyph).unwrap();
+        // let bitmap = scaler.scale_color_bitmap(glyph, swash::scale::StrikeWith::BestFit);
 
         unsafe {
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
@@ -992,28 +1028,29 @@ fn main() {
             gl.tex_image_2d(glow::TEXTURE_2D,
                             0,
                             glow::R8 as i32,
-                            bitmap.width(),
-                            bitmap.rows(),
+                            bitmap.placement.width as i32,
+                            bitmap.placement.height as i32,
                             0,
                             glow::RED,
                             glow::UNSIGNED_BYTE,
-                            Some(bitmap.buffer())
+                            Some(bitmap.data.as_ref())
             );
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
             glyphs.push(Glyph {
                 tex,
-                bearing: (glyph.bitmap_left(), glyph.bitmap_top()),
-                x: bitmap.width(),
-                y: bitmap.rows(),
+                bearing: (bitmap.placement.left, bitmap.placement.top),
+                x: bitmap.placement.width as i32,
+                y: bitmap.placement.height as i32,
             });
         }
     }
 
     let font = LoadedFont {
-        size: 15,
+        size: font_size as i32,
         glyphs,
         max_advance,
+        ascent: metrics.ascent as i32
     };
 
     let drawing_context = DrawingContext {
@@ -1051,8 +1088,8 @@ fn main() {
     }
 
     let mut quit = false;
-    let mut pos = [0.0, 0.0];
-    let mut vel = [0.4, 1.0];
+    // let mut pos = [0.0, 0.0];
+    // let mut vel = [0.4, 1.0];
     let mut old = std::time::Instant::now();
 
     drawing_context.video.text_input().start();
@@ -1067,6 +1104,9 @@ fn main() {
         argument: String::new(),
         drawing_context: &drawing_context,
         command_amount: None,
+        config: EditorConfig {
+            tab_width: 4
+        }
     };
     let mut commands: HashMap<&str, EditorOperation> = HashMap::new();
     commands.insert("left",  EditorOperation::Motion(&| a, b | a.left(b)));
@@ -1101,6 +1141,7 @@ fn main() {
     commands.insert("bsp_arg", EditorOperation::Simple(&|a| { a.argument.pop(); }));
     commands.insert("view_up",  EditorOperation::Simple(&|a| a.view_up(5)));
     commands.insert("view_down",  EditorOperation::Simple(&|a| a.view_down(5)));
+    commands.insert("insert_tab", EditorOperation::Simple(&|a| a.insert("\t")));
 
     let normal_keymap = parse_keymap(&commands, &[
         // TODO translate move commands into the mode-appropriate versions
@@ -1130,6 +1171,7 @@ fn main() {
         ("ret", "newline_at_cursor"),
         ("bsp", "backspace"),
         ("esc", "normal_mode"),
+        ("tab", "insert_tab"),
     ]);
 
     let operator_keymap = parse_keymap(&commands, &[
@@ -1151,10 +1193,11 @@ fn main() {
     let themedef = vec![
         ("string", green),
         ("constant.numeric", dark_yellow),
-        ("storage.type, keyword.other", dark_red),
+        ("storage.type, keyword.other", light_red),
         ("support.type, entity.name.struct", light_yellow),
         ("support.macro", magenta),
         ("support.function, entity.name.function, meta.require, support.function.any-method, variable.function", blue),
+        ("comment", comment_gray),
         ("", white)
     ];
 
@@ -1191,7 +1234,7 @@ fn main() {
                     };
 
                     current_command.push(key.clone());
-                    println!("{:?}", current_command);
+                    // println!("{:?}", current_command);
                     fn match_current_command(editor: &mut EditorState, keymap: &Vec<(Vec<Key>, EditorOperation)>, current_command: &mut Vec<Key>) {
                         let mut found = false;
                         for m in keymap.iter() {
@@ -1205,7 +1248,7 @@ fn main() {
                                     }
                                     EditorOperation::Motion(f) => {
                                         let pos = f(editor, editor.cursor.clone());
-                                        println!("{:?}", pos);
+                                        // println!("{:?}", pos);
                                         match editor.mode {
                                             EditorMode::Normal => {
                                                 // clamp cursor pos
@@ -1275,26 +1318,26 @@ fn main() {
             }
         }
 
-        pos[0] += delta * vel[0];
-        pos[1] += delta * vel[1];
+        // pos[0] += delta * vel[0];
+        // pos[1] += delta * vel[1];
 
-        for (i, v) in pos.iter_mut().enumerate() {
-            if *v > 1.0 {
-                vel[i] = -vel[i];
-                *v = 1.0;
-            }
-            if *v < 0.0 {
-                vel[i] = -vel[i];
-                *v = 0.0;
-            }
-        }
+        // for (i, v) in pos.iter_mut().enumerate() {
+        //     if *v > 1.0 {
+        //         vel[i] = -vel[i];
+        //         *v = 1.0;
+        //     }
+        //     if *v < 0.0 {
+        //         vel[i] = -vel[i];
+        //         *v = 0.0;
+        //     }
+        // }
 
         unsafe {
             drawing_context.gl.clear(glow::COLOR_BUFFER_BIT);
 
             let window_size = drawing_context.window.drawable_size();
 
-            let block_size = (max_advance as i32 / 2 as i32, max_advance as i32);
+            let block_size = (max_advance.0 as i32, max_advance.1 as i32);
 
             let cursor_mode = match editor.mode {
                 EditorMode::Normal => { CursorMode::Block },
@@ -1326,7 +1369,23 @@ fn main() {
             drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), gutter_gray.r, gutter_gray.g, gutter_gray.b, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
-            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * editor.cursor.x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32 - 1.0) / window_size.0 as f32, (block_size.1 * (editor.cursor.y - editor.view.y) + cursor_offset.y) as f32 / window_size.1 as f32);
+            let mut cursor_x = 0;
+
+            for (i, ch) in editor.get_line(editor.cursor.y).chars().enumerate() {
+                if i as i32 >= editor.cursor.x {
+                    break;
+                }
+                match ch {
+                    '\t' => {
+                        cursor_x += editor.config.tab_width;
+                    }
+                    _ => {
+                        cursor_x += 1;
+                    }
+                }
+            }
+
+            drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "offset").as_ref(), ((block_size.0 * cursor_x as i32 + pen_x as i32 * block_size.0 + cursor_offset.x) as f32) / window_size.0 as f32, (block_size.1 * (editor.cursor.y - editor.view.y) + cursor_offset.y) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_2_f32(drawing_context.gl.get_uniform_location(quad_shader, "scale").as_ref(), (cursor_size.x) as f32 / window_size.0 as f32, (cursor_size.y) as f32 / window_size.1 as f32);
             drawing_context.gl.uniform_4_f32(drawing_context.gl.get_uniform_location(quad_shader, "color").as_ref(), blue.r, blue.g, blue.b, 1.0);
             drawing_context.gl.draw_arrays(glow::TRIANGLES, 0, 6);
@@ -1357,8 +1416,15 @@ fn main() {
                     let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
                     for range in ranges {
                         for i in range.1.chars() {
-                            drawing_context.draw_glyph_on_grid(i, pen, &range.0.foreground.into());
-                            pen.0 += 1;
+                            match i {
+                                '\t' => {
+                                    pen.0 += editor.config.tab_width;
+                                }
+                                _ => {
+                                    drawing_context.draw_glyph_on_grid(i, pen, &range.0.foreground.into());
+                                    pen.0 += 1;
+                                }
+                            }
                         }
                     }
                     pen.1 += 1;
@@ -1367,15 +1433,15 @@ fn main() {
                 }
             }
             if let EditorMode::ArgumentPending(ref query_str, _) = editor.mode {
-                pen.1 = window_size.1 as i32 - max_advance as i32;
+                pen.1 = window_size.1 as i32 - max_advance.1 as i32;
                 pen.0 = 0;
                 for i in query_str.chars() {
                     drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, &Color { r: 255.0, g: 255.0, b: 255.0 });
-                    pen.0 += max_advance as i32 / 2;
+                    pen.0 += max_advance.0 as i32;
                 }
                 for i in editor.argument.chars() {
                     drawing_context.draw_glyph(i, IVec2 { x: pen.0, y: pen.1 }, &Color { r: 255.0, g: 255.0, b: 255.0 });
-                    pen.0 += max_advance as i32 / 2;
+                    pen.0 += max_advance.0 as i32;
                 }
             }
 

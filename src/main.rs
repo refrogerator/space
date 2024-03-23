@@ -488,9 +488,9 @@ impl <'a, 'b>EditorState<'a, 'b> {
             let cur = ch[0];
             let next = ch[1];
             let idx = i as i32 + cursor.x;
-            if cur.is_whitespace() && next.is_alphabetic() ||
-                cur.is_alphabetic() && !next.is_alphabetic() && !next.is_whitespace() ||
-                next.is_alphabetic() && !cur.is_alphabetic() && !cur.is_whitespace() {
+            if cur.is_whitespace() && next.is_alphanumeric() ||
+                cur.is_alphanumeric() && !next.is_alphanumeric() && !next.is_whitespace() ||
+                next.is_alphanumeric() && !cur.is_alphanumeric() && !cur.is_whitespace() {
                 return Position::Range(cursor.clone(), IVec2::new(idx + 1, cursor.y));
             }
         }
@@ -504,9 +504,9 @@ impl <'a, 'b>EditorState<'a, 'b> {
             let cur = ch[1];
             let next = ch[0];
             let idx = cursor.x - i as i32;
-            if cur.is_whitespace() && next.is_alphabetic() ||
-                cur.is_alphabetic() && !next.is_alphabetic() && !next.is_whitespace() ||
-                next.is_alphabetic() && !cur.is_alphabetic() && !cur.is_whitespace() {
+            if cur.is_whitespace() && next.is_alphanumeric() ||
+                cur.is_alphanumeric() && !next.is_alphanumeric() && !next.is_whitespace() ||
+                next.is_alphanumeric() && !cur.is_alphanumeric() && !cur.is_whitespace() {
                 return Position::Range(cursor.clone(), IVec2::new(idx - 1, cursor.y));
             }
         }

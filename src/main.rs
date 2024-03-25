@@ -2,7 +2,7 @@ use std::any::Any;
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
-use std::ops::{Add, AddAssign};
+use std::ops::{Add, AddAssign, SubAssign};
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
@@ -330,14 +330,48 @@ struct EditorConfig {
     text_size: u32,
 }
 
+#[derive(Debug, Clone)]
 struct LineDiff {
+    line: i32,
+    old: String,
+    new: String,
 }
 
+#[derive(Debug, Clone)]
 enum EditEvent {
-    Delete(Position),
+    Delete(Position, String),
+    InsertModeEdit(Vec<LineDiff>)
 }
 
+#[derive(Debug, Clone)]
 struct UndoHistory {
+    edits: Vec<EditEvent>,
+    pos: usize,
+}
+
+impl UndoHistory {
+    fn push(&mut self, edit: EditEvent) {
+        self.edits.truncate(self.pos);
+        self.pos += 1;
+        self.edits.push(edit);
+    }
+
+    fn pop(&mut self) -> Option<EditEvent> {
+        if self.pos > 0 {
+            self.pos -= 1;
+            Some(self.edits[self.pos].to_owned())
+        } else {
+            None
+        }
+    }
+    fn get_redo(&mut self) -> Option<EditEvent> {
+        if self.pos < self.edits.len() {
+            self.pos += 1;
+            Some(self.edits[self.pos - 1].to_owned())
+        } else {
+            None
+        }
+    }
 }
 
 fn get_res_file_path(filename: &str) -> String {
@@ -758,20 +792,66 @@ impl<'a, 'b> EditorState<'a, 'b> {
         self.insert_mode();
     }
 
-    fn paste(&mut self) {
-        let text = self.drawing_context.video.clipboard().clipboard_text().unwrap();
-        let lines = text.lines().collect::<Vec<&str>>();
-        if !lines.is_empty() {
-            for (i, line) in lines.into_iter().enumerate() {
-                self.contents.insert(self.cursor.y as usize + 1 + i, line.to_string());
+    fn redo(&mut self) {
+        if let Some(event) = self.undo_history.get_redo() {
+            match event {
+                EditEvent::Delete(pos, _) => {
+                    self.delete_pos(pos, false);
+                }
+                _ => {}
             }
-        } else {
-            self.insert(&text);
         }
     }
 
-    fn copy_pos(&mut self, pos: Position) {
-        let copy_str = match pos {
+    fn undo(&mut self) {
+        if let Some(event) = self.undo_history.pop() {
+            match event {
+                EditEvent::Delete(pos, content) => {
+                    let pos = match pos {
+                        Position::Range(a, b) | Position::Block(a, b) => {
+                            if a.y != b.y {
+                                if a.y < b.y {
+                                    a
+                                } else {
+                                    b
+                                }
+                            } else {
+                                IVec2::new(a.x.min(b.x), a.y)
+                            }
+                        }
+                        Position::Point(a) => a,
+                        Position::Lines(a, b) => {
+                            IVec2::new(0, a.min(b) - 1)
+                        }
+                        Position::Nothing => {
+                            return;
+                        }
+                    };
+                    self.sanitize_insert_at(&content, pos);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn sanitize_insert_at(&mut self, text: &str, pos: IVec2) {
+        let lines = text.lines().collect::<Vec<&str>>();
+        if lines.len() > 1 {
+            for (i, line) in lines.into_iter().enumerate() {
+                self.contents.insert((pos.y + 1) as usize + i, line.to_string());
+            }
+        } else {
+            self.contents[pos.y as usize].insert_str(pos.x as usize, text);
+        }
+    }
+
+    fn paste(&mut self) {
+        let text = self.drawing_context.video.clipboard().clipboard_text().unwrap();
+        self.sanitize_insert_at(&text, self.cursor.clone());
+    }
+
+    fn get_text_at(&self, pos: Position) -> String {
+        match pos {
             Position::Range(start, end) => {
                 let mut chud = String::new();
                 if start.y != end.y {
@@ -791,19 +871,15 @@ impl<'a, 'b> EditorState<'a, 'b> {
                     }
                     chud.push_str(chud2.as_str());
                 } else {
-                    if start.x < end.x {
-                        chud = self.contents[start.y as usize]
-                            .chars()
-                            .skip(start.x as usize)
-                            .take(end.x as usize - 1)
-                            .collect::<String>();
-                    } else {
-                        chud = self.contents[start.y as usize]
-                            .chars()
-                            .skip(end.x as usize)
-                            .take(start.x as usize - 1)
-                            .collect::<String>();
-                    }
+                    let y = start.y;
+                    let (start, end) = (start.x.min(end.x), start.x.max(end.x));
+                    dbg!((start, end));
+                    chud = self.contents[y as usize]
+                        .chars()
+                        .skip(start as usize)
+                        .take((end - start) as usize)
+                        .collect::<String>();
+                    dbg!(&chud);
                 }
                 chud
             }
@@ -812,7 +888,11 @@ impl<'a, 'b> EditorState<'a, 'b> {
                 self.contents[start..=end].iter().fold(String::new(), |a, b| a + b + "\n")
             }
             _ => { String::new() }
-        };
+        }
+    }
+
+    fn copy_pos(&mut self, pos: Position) {
+        let copy_str = self.get_text_at(pos);
         self.drawing_context.video.clipboard().set_clipboard_text(&copy_str).unwrap();
     }
 
@@ -886,8 +966,11 @@ impl<'a, 'b> EditorState<'a, 'b> {
         self.drawing_context.video.text_input().stop();
     }
 
-    fn delete_pos(&mut self, pos: Position) {
+    fn delete_pos(&mut self, pos: Position, add_undo: bool) {
         let norm_pos = self.normalize_pos(pos);
+        if add_undo {
+            self.undo_history.push(EditEvent::Delete(norm_pos.clone(), self.get_text_at(norm_pos.clone())));
+        }
         self.copy_pos(norm_pos.clone());
         match norm_pos {
             Position::Range(start, end) => {
@@ -941,11 +1024,11 @@ impl<'a, 'b> EditorState<'a, 'b> {
     }
 
     fn delete_mode(&mut self) {
-        self.mode = EditorMode::OperatorPending(|a, b| a.delete_pos(b));
+        self.mode = EditorMode::OperatorPending(|a, b| a.delete_pos(b, true));
     }
 
     fn change_mode(&mut self) {
-        self.mode = EditorMode::OperatorPending(|a, b| { a.delete_pos(b); a.insert_mode() });
+        self.mode = EditorMode::OperatorPending(|a, b| { a.delete_pos(b, true); a.insert_mode() });
     }
 }
 
@@ -1445,7 +1528,10 @@ fn main() {
         colorscheme: scheme.into(),
         syntax: syntax.to_owned(),
         syntax_set: ps,
-        undo_history: UndoHistory {  }
+        undo_history: UndoHistory { 
+            edits: Vec::new(),
+            pos: 0,
+        }
     };
 
     unsafe {
@@ -1539,6 +1625,8 @@ fn main() {
     );
     commands.insert("copy", EditorOperation::Simple(&|a| a.copy()));
     commands.insert("paste", EditorOperation::Simple(&|a| a.paste()));
+    commands.insert("undo", EditorOperation::Simple(&|a| a.undo()));
+    commands.insert("redo", EditorOperation::Simple(&|a| a.redo()));
     commands.insert("load_config", EditorOperation::Simple(&|a| a.load_config()));
     commands.insert("1",
         EditorOperation::Simple(&|a| a.command_amount.push('1')),
@@ -1597,6 +1685,8 @@ fn main() {
             ("g o", "line_end"),
             ("g e", "last_line"),
             ("g i", "first_line"),
+            ("k", "undo"),
+            ("K", "redo"),
             ("p", "paste"),
             ("y", "copy"),
             ("1", "1"),

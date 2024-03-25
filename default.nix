@@ -6,7 +6,7 @@ pkgs.rustPlatform.buildRustPackage rec {
   src = pkgs.lib.cleanSource ./.;
   buildInputs = [ pkgs.SDL2 ];
   postBuild = ''
-    mkdir $out/etc/space/ -p
-    cp -r res $out/etc/space
+    mkdir $out/share/space/ -p
+    cp -r res $out/share/space
   '';
 }

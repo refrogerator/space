@@ -2,7 +2,7 @@ use std::any::Any;
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
-use std::ops::Add;
+use std::ops::{Add, AddAssign};
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
@@ -29,8 +29,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 fn create_shader(gl: &glow::Context, vert: &str, frag: &str) -> glow::Program {
     unsafe {
         let program = gl.create_program().unwrap();
-        let vs_source = std::fs::read_to_string(vert).unwrap();
-        let fs_source = std::fs::read_to_string(frag).unwrap();
+        let vs_source = vert;
+        let fs_source = frag;
         let vs = gl.create_shader(glow::VERTEX_SHADER).unwrap();
         gl.shader_source(vs, &vs_source);
         gl.compile_shader(vs);
@@ -340,6 +340,25 @@ enum EditEvent {
 struct UndoHistory {
 }
 
+fn get_res_file_path(filename: &str) -> String {
+    if cfg!(debug_assertions) {
+        return format!("res/{}", filename);
+    }
+
+    if !cfg!(target_os = "windows") {
+        for path in std::env::var("XDG_DATA_DIRS").unwrap().split(':') {
+            let full_str = format!("{}/space/res/{}", path, filename);
+            let res = std::path::Path::new(full_str.as_str()).try_exists();
+            if let Ok(true) = res {
+                return full_str;
+            }
+        }
+        String::new()
+    } else {
+        "".to_string()
+    }
+}
+
 struct EditorState<'a, 'b> {
     contents: Vec<String>,
     filename: Option<String>,
@@ -448,7 +467,7 @@ impl<'a, 'b> EditorState<'a, 'b> {
 
     fn load_colorscheme(&mut self, colorscheme: &str) {
         let scheme: CColorscheme = toml::from_str(
-            std::fs::read_to_string("res/colorschemes/".to_string() + colorscheme + ".toml")
+            std::fs::read_to_string(get_res_file_path(format!("colorschemes/{}.toml", colorscheme).as_str()))
                 .ok()
                 .expect(&format!("colorscheme \"{}\" does not exist", colorscheme))
                 .as_str(),
@@ -1284,10 +1303,10 @@ fn main() {
 
     let vertex_buffer = unsafe { gl.create_vertex_array().expect("uh nuh uh") };
 
-    let test_shader = create_shader(&gl, "src/test.vert", "src/test.frag");
+    let test_shader = create_shader(&gl, include_str!("test.vert"), include_str!("test.frag"));
 
-    let quad_shader = create_shader(&gl, "src/quad.vert", "src/quad.frag");
-    let text_shader = create_shader(&gl, "src/quad.vert", "src/text.frag");
+    let quad_shader = create_shader(&gl, include_str!("quad.vert"), include_str!("quad.frag"));
+    let text_shader = create_shader(&gl, include_str!("quad.vert"), include_str!("text.frag"));
 
     let config: EditorConfig = toml::from_str(
         std::fs::read_to_string("/home/robin/.config/space/config.toml")
@@ -1297,7 +1316,7 @@ fn main() {
     .unwrap();
 
     let mut scontext = swash::scale::ScaleContext::new();
-    let file = std::fs::read("res/fonts/ttf/JetBrainsMono-Regular.ttf").unwrap();
+    let file = std::fs::read(get_res_file_path("fonts/ttf/JetBrainsMono-Regular.ttf")).unwrap();
     let font_size = config.text_size as f32;
     let font = swash::FontRef::from_index(&file, 0).unwrap();
     let mut scaler = scontext.builder(font).size(font_size).hint(false).build();
@@ -1398,7 +1417,7 @@ fn main() {
     drawing_context.video.text_input().stop();
 
     let scheme: CColorscheme = toml::from_str(
-        std::fs::read_to_string("res/colorschemes/".to_string() + &config.colorscheme + ".toml")
+        std::fs::read_to_string(get_res_file_path(format!("colorschemes/{}.toml", &config.colorscheme).as_str()))
             .ok()
             .expect(&format!(
                 "colorscheme \"{}\" does not exist",
@@ -1722,8 +1741,8 @@ fn main() {
                                                 editor._move(pos);
                                             }
                                             EditorMode::OperatorPending(f_) => {
-                                                f_(editor, pos.clone());
                                                 editor.normal_mode();
+                                                f_(editor, pos.clone());
                                                 let move_part = editor.move_part(pos.clone());
                                                 if move_part.x < editor.cursor.x
                                                     || move_part.y < editor.cursor.y

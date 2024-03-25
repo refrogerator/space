@@ -1,5 +1,12 @@
-with import <nixpkgs> {};
-stdenv.mkDerivation {
-    name = "dev-environment"; # Probably put a more meaningful name here
-    buildInputs = [ SDL2 ];
+{ pkgs ? import <nixpkgs> { } }:
+pkgs.rustPlatform.buildRustPackage rec {
+  pname = "space";
+  version = "0.1";
+  cargoLock.lockFile = ./Cargo.lock;
+  src = pkgs.lib.cleanSource ./.;
+  buildInputs = [ pkgs.SDL2 ];
+  postBuild = ''
+    mkdir $out/etc/space/ -p
+    cp -r res $out/etc/space
+  '';
 }

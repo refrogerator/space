@@ -1,0 +1,44 @@
+[colors]
+# polar night
+nord0 = "2e3440" # nord 0
+nord1 = "3b4252" # nord 0
+nord2 = "434c5e" # nord 0
+nord3 = "4c566a" # nord 0
+
+# snow storm
+nord4 = "d8dee9" # nord 0
+nord5 = "e5e9f0" # nord 0
+nord6 = "eceff4" # nord 0
+
+# frost
+nord7 = "8fbcbb" # nord 0
+nord8 = "88c0d0" # nord 0
+nord9 = "81a1c1" # nord 0
+nord10 = "5e81ac" # nord 0
+
+# aurora
+nord11 = "bf616a" # nord 0
+nord12 = "d08770" # nord 0
+nord13 = "ebcb8b" # nord 0
+nord14 = "a3be8c" # nord 0
+nord15 = "b48ead" # nord 0
+
+[syntax]
+strings = "nord14"
+numbers = "nord15"
+keywords = "nord9"
+types = "nord7"
+macros = "nord10"
+operators = "nord9"
+functions = "nord8"
+methods = "nord8"
+comments = "nord3"
+fields = "nord4"
+text = "nord6"
+
+[ui]
+foreground = "nord6"
+background = "nord0"
+current_line = "nord2"
+unfocused_text = "nord1"
+cursor = "nord4"

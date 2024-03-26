@@ -406,6 +406,7 @@ struct EditorState<'a, 'b> {
     colorscheme: Colorscheme,
     syntax: SyntaxReference,
     syntax_set: SyntaxSet,
+    search: String,
     undo_history: UndoHistory,
 }
 
@@ -848,6 +849,49 @@ impl<'a, 'b> EditorState<'a, 'b> {
     fn paste(&mut self) {
         let text = self.drawing_context.video.clipboard().clipboard_text().unwrap();
         self.sanitize_insert_at(&text, self.cursor.clone());
+    }
+
+    fn submit_new_search(&mut self, search: &str) {
+        self.search = search.to_string();
+        dbg!(&self.search);
+        let pos = self.search_next(self.cursor.clone());
+        self._move(pos);
+    }
+
+    fn new_search(&mut self) {
+        self.arg_pending_mode("search: ", |a| { a.submit_new_search(&a.argument.clone()) });
+    }
+
+    fn search_prev(&mut self) -> Position {
+        if self.search.is_empty() {
+            return Position::Nothing;
+        }
+        let jpos = self.cursor.clone();
+        for (i, line) in self.contents[..=jpos.y as usize].iter().rev().enumerate() {
+            for (pos, _) in line.match_indices(&self.search).collect::<Vec<(usize, &str)>>().into_iter().rev() { // i could just write my own search function but oh well
+                if i == 0 && pos >= jpos.x as usize {
+                    continue;
+                }
+                return Position::Range(IVec2::new(pos as i32 + self.search.len() as i32, jpos.y - i as i32), IVec2::new(pos as i32, jpos.y - i as i32));
+            }
+            println!("{}", line);
+        }
+        Position::Nothing
+    }
+
+    fn search_next(&mut self, jpos: IVec2) -> Position {
+        if self.search.is_empty() {
+            return Position::Nothing;
+        }
+        for (i, line) in self.contents[jpos.y as usize..].iter().enumerate() {
+            for (pos, _) in line.match_indices(&self.search) {
+                if i == 0 && pos <= jpos.x as usize {
+                    continue;
+                }
+                return Position::Range(IVec2::new(pos as i32 + self.search.len() as i32, jpos.y + i as i32), IVec2::new(pos as i32, jpos.y + i as i32));
+            }
+        }
+        Position::Nothing
     }
 
     fn get_text_at(&self, pos: Position) -> String {
@@ -1528,6 +1572,7 @@ fn main() {
         colorscheme: scheme.into(),
         syntax: syntax.to_owned(),
         syntax_set: ps,
+        search: String::new(),
         undo_history: UndoHistory { 
             edits: Vec::new(),
             pos: 0,
@@ -1627,6 +1672,9 @@ fn main() {
     commands.insert("paste", EditorOperation::Simple(&|a| a.paste()));
     commands.insert("undo", EditorOperation::Simple(&|a| a.undo()));
     commands.insert("redo", EditorOperation::Simple(&|a| a.redo()));
+    commands.insert("new_search", EditorOperation::Simple(&|a| a.new_search()));
+    commands.insert("search_next", EditorOperation::Motion(&|a, b| dbg!(a.search_next(b))));
+    commands.insert("search_prev", EditorOperation::Motion(&|a, b| dbg!(a.search_prev())));
     commands.insert("load_config", EditorOperation::Simple(&|a| a.load_config()));
     commands.insert("1",
         EditorOperation::Simple(&|a| a.command_amount.push('1')),
@@ -1689,6 +1737,9 @@ fn main() {
             ("K", "redo"),
             ("p", "paste"),
             ("y", "copy"),
+            ("/", "new_search"),
+            ("h", "search_next"),
+            ("H", "search_prev"),
             ("1", "1"),
             ("2", "2"),
             ("3", "3"),

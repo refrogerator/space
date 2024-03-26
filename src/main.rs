@@ -91,6 +91,7 @@ struct Vec4 {
     w: f32,
 }
 
+#[derive(Debug)]
 struct Color {
     r: f32,
     g: f32,
@@ -285,6 +286,7 @@ struct CColorscheme {
     ui: CUiColors,
 }
 
+#[derive(Debug)]
 struct UiColors {
     foreground: Color,
     background: Color,
@@ -293,6 +295,7 @@ struct UiColors {
     cursor: Color,
 }
 
+#[derive(Debug)]
 struct Colorscheme {
     ui: UiColors,
     syntax_theme: syntect::highlighting::Theme,
@@ -510,6 +513,15 @@ impl<'a, 'b> EditorState<'a, 'b> {
         .map_err(|a| panic!("{} in {}.toml", a.message(), colorscheme))
         .unwrap();
         self.colorscheme = scheme.into();
+        let background_color_rgb = srgb_to_rgb(&self.colorscheme.ui.background);
+        unsafe {
+            self.drawing_context.gl.clear_color(
+                background_color_rgb.r,
+                background_color_rgb.g,
+                background_color_rgb.b,
+                1.0,
+            );
+        }
     }
 
     fn arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState)) {
@@ -1662,6 +1674,9 @@ fn main() {
             a.argument.pop();
         }),
     );
+    commands.insert("cancel_arg", 
+        EditorOperation::Simple(&|a| { a.argument.clear(); a.normal_mode() })
+    );
     commands.insert("view_up", EditorOperation::Simple(&|a| a.view_up(5)));
     commands.insert("view_down", EditorOperation::Simple(&|a| a.view_down(5)));
     commands.insert("insert_tab", EditorOperation::Simple(&|a| a.insert("\t")));
@@ -1788,7 +1803,7 @@ fn main() {
         ],
     );
 
-    let argument_keymap = parse_keymap(&commands, &[("ret", "run_arg"), ("bsp", "bsp_arg")]);
+    let argument_keymap = parse_keymap(&commands, &[("ret", "run_arg"), ("bsp", "bsp_arg"), ("esc", "cancel_arg")]);
 
     if cfg!(debug_assertions) {
         editor.load_file("test.rs");

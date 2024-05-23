@@ -1035,6 +1035,9 @@ impl<'a, 'b> EditorState<'a, 'b> {
                 let (start, end) = (a.min(b) as usize, a.max(b) as usize);
                 self.contents[start..=end].iter().fold(String::new(), |a, b| a + b + "\n")
             }
+            Position::Point(point) => {
+                self.contents[point.y as usize][point.x as usize..point.x as usize + 1].to_string()
+            }
             _ => { String::new() }
         }
     }
@@ -1201,6 +1204,9 @@ impl<'a, 'b> EditorState<'a, 'b> {
                     }
                     self.contents.remove(smaller as usize);
                 }
+            }
+            Position::Point(point) => {
+                self.contents[point.y as usize].remove(point.x as usize);
             }
             _ => {}
         }
@@ -1822,6 +1828,7 @@ fn main() {
     commands.insert("search_next", EditorOperation::Motion(&|a, b| dbg!(a.search_next(b))));
     commands.insert("search_prev", EditorOperation::Motion(&|a, b| dbg!(a.search_prev())));
     commands.insert("load_config", EditorOperation::Simple(&|a| a.load_config()));
+    commands.insert("delete_char", EditorOperation::Simple(&|a| a.delete_pos(Position::Point(a.cursor.clone()), true)));
     commands.insert("1",
         EditorOperation::Simple(&|a| a.command_amount.push('1')),
     );
@@ -1872,6 +1879,7 @@ fn main() {
             ("b", "word_backwards"),
             ("d", "delete_mode"),
             ("c", "change_mode"),
+            ("x", "delete_char"),
             ("spc s", "save_file"),
             ("spc spc", "open_file_mode"),
             ("spc r", "load_config"),

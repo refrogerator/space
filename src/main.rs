@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::ascii::AsciiExt;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Add, AddAssign, SubAssign};
@@ -341,9 +342,42 @@ struct LineDiff {
 }
 
 #[derive(Debug, Clone)]
+enum LineEdit {
+    Added(i32, String),
+    Removed(i32, String),
+    Edited(LineDiff)
+}
+
+#[derive(Debug, Clone)]
+struct LineEdits(Vec<LineEdit>);
+
+impl LineEdits {
+    fn line_before_edit(&self, line: i32) -> i32 {
+        let mut out_line = line;
+        for i in self.0.iter() {
+            match i {
+                LineEdit::Added(l, _) => {
+                    if l < &line {
+                        out_line += 1;
+                    }
+                }
+                LineEdit::Removed(l, _) => {
+                    if l < &line {
+                        out_line -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out_line
+    }
+}
+
+#[derive(Debug, Clone)]
 enum EditEvent {
     Delete(Position, String),
-    InsertModeEdit(Vec<LineDiff>)
+    Paste(Position, String),
+    InsertModeEdit(LineEdits),
 }
 
 #[derive(Debug, Clone)]
@@ -356,13 +390,14 @@ impl UndoHistory {
     fn push(&mut self, edit: EditEvent) {
         self.edits.truncate(self.pos);
         self.pos += 1;
+        println!("{:?}", edit);
         self.edits.push(edit);
     }
 
     fn pop(&mut self) -> Option<EditEvent> {
         if self.pos > 0 {
             self.pos -= 1;
-            Some(self.edits[self.pos].to_owned())
+            Some(self.edits[self.pos].clone())
         } else {
             None
         }
@@ -370,7 +405,7 @@ impl UndoHistory {
     fn get_redo(&mut self) -> Option<EditEvent> {
         if self.pos < self.edits.len() {
             self.pos += 1;
-            Some(self.edits[self.pos - 1].to_owned())
+            Some(self.edits[self.pos - 1].clone())
         } else {
             None
         }
@@ -378,22 +413,17 @@ impl UndoHistory {
 }
 
 fn get_res_file_path(filename: &str) -> String {
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) || cfg!(target_os = "windows") {
         return format!("res/{}", filename);
     }
-
-    if !cfg!(target_os = "windows") {
-        for path in std::env::var("XDG_DATA_DIRS").unwrap().split(':') {
-            let full_str = format!("{}/space/res/{}", path, filename);
-            let res = std::path::Path::new(full_str.as_str()).try_exists();
-            if let Ok(true) = res {
-                return full_str;
-            }
+    for path in std::env::var("XDG_DATA_DIRS").unwrap().split(':') {
+        let full_str = format!("{}/space/res/{}", path, filename);
+        let res = std::path::Path::new(full_str.as_str()).try_exists();
+        if let Ok(true) = res {
+            return full_str;
         }
-        String::new()
-    } else {
-        "".to_string()
     }
+    String::new()
 }
 
 struct EditorState<'a, 'b> {
@@ -664,16 +694,30 @@ impl<'a, 'b> EditorState<'a, 'b> {
 
     fn view_up(&mut self, amt: i32) {
         if self.view.y - amt < 0 {
-            // for _ in 0..self.view.y {
-            //     self.move_up();
-            // }
+            for _ in 0..self.view.y {
+                self.move_up();
+            }
             self.view.y = 0;
         } else {
-            // for _ in 0..amt {
-            //     self.move_up();
-            // }
+            for _ in 0..amt {
+                self.move_up();
+            }
             self.view.y -= amt;
         }
+    }
+
+    fn clamp_cursor(&mut self) {
+        self.cursor = self.clamp_pos(self.cursor.clone());
+        let block_size = self.drawing_context.current_font.max_advance;
+        let window_size = self.drawing_context.window.size();
+        let view_size = window_size.1 / block_size.1 as u32 - 1;
+        let view_size = view_size as i32;
+        if self.cursor.y < self.view.y {
+            self.view.y = self.cursor.y;
+        } else if self.cursor.y > self.view.y + view_size {
+            self.view.y = self.cursor.y - view_size;
+        }
+        self.view.y = self.view.y.max(0);
     }
 
     fn move_left(&mut self) {
@@ -785,31 +829,59 @@ impl<'a, 'b> EditorState<'a, 'b> {
         self._move(pos);
     }
 
+    fn newline_at(&mut self, pos: i32, contents: String) {
+        if let EditEvent::InsertModeEdit(ref mut fort) = self.undo_history.edits.last_mut().unwrap() {
+            fort.0.push(LineEdit::Added(pos, contents.clone()));
+        }
+        self.contents.insert(pos as usize, contents);
+    }
+
     fn newline_at_cursor(&mut self) {
         let new_line = self.contents[self.cursor.y as usize].split_off(self.cursor.x as usize);
-        self.contents.insert(self.cursor.y as usize + 1, new_line);
+        self.newline_at(self.cursor.y + 1, new_line);
         self.move_down();
         self.move_to_line_start();
     }
 
     fn open_above(&mut self) {
-        self.contents.insert(self.cursor.y as usize, String::new());
-        self.move_to_line_start();
         self.insert_mode();
+        self.newline_at(self.cursor.y, String::new());
+        self.move_to_line_start();
     }
 
     fn open_below(&mut self) {
-        self.contents.insert(self.cursor.y as usize + 1, String::new());
+        self.insert_mode();
+        self.newline_at(self.cursor.y + 1, String::new());
         self.move_down();
         self.move_to_line_start();
-        self.insert_mode();
     }
 
     fn redo(&mut self) {
-        if let Some(event) = self.undo_history.get_redo() {
+        // TODO work with refs
+        let ev = self.undo_history.get_redo();
+        if let Some(ref event) = ev {
             match event {
                 EditEvent::Delete(pos, _) => {
-                    self.delete_pos(pos, false);
+                    self.delete_pos(pos.to_owned(), false);
+                }
+                EditEvent::InsertModeEdit(ref edits) => {
+                    println!("{:?}", edits);
+                    for edit in edits.0.iter() {
+                        match edit {
+                            LineEdit::Edited(diff) => {
+                                println!("{:?}", diff);
+                                println!("{:?}", self.contents[diff.line as usize]);
+                                self.contents[diff.line as usize] = diff.new.clone();
+                            }
+                            LineEdit::Removed(line, content) => {
+                                self.contents.remove(*line as usize);
+                            }
+                            LineEdit::Added(line, content) => {
+                                self.contents.insert(*line as usize, content.clone());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -817,7 +889,8 @@ impl<'a, 'b> EditorState<'a, 'b> {
     }
 
     fn undo(&mut self) {
-        if let Some(event) = self.undo_history.pop() {
+        // TODO work with refs
+        if let Some(mut event) = self.undo_history.pop() {
             match event {
                 EditEvent::Delete(pos, content) => {
                     let pos = match pos {
@@ -842,14 +915,33 @@ impl<'a, 'b> EditorState<'a, 'b> {
                     };
                     self.sanitize_insert_at(&content, pos);
                 }
+                EditEvent::InsertModeEdit(ref edits) => {
+                    println!("{:?}", edits);
+                    for edit in edits.0.iter().rev() {
+                        match edit {
+                            LineEdit::Edited(diff) => {
+                                self.contents[diff.line as usize] = diff.old.clone();
+                            }
+                            LineEdit::Removed(line, content) => {
+                                self.contents.insert(*line as usize, content.clone());
+                            }
+                            LineEdit::Added(line, content) => {
+                                println!("{:?}", self.contents.len());
+                                println!("{}", line);
+                                self.contents.remove(*line as usize);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
     }
 
     fn sanitize_insert_at(&mut self, text: &str, pos: IVec2) {
-        let lines = text.lines().collect::<Vec<&str>>();
-        if lines.len() > 1 {
+        if text.contains('\n') {
+            let lines = text.lines().collect::<Vec<&str>>();
             for (i, line) in lines.into_iter().enumerate() {
                 self.contents.insert((pos.y + 1) as usize + i, line.to_string());
             }
@@ -896,7 +988,7 @@ impl<'a, 'b> EditorState<'a, 'b> {
             return Position::Nothing;
         }
         for (i, line) in self.contents[jpos.y as usize..].iter().enumerate() {
-            for (pos, _) in line.match_indices(&self.search) {
+            for (pos, _) in line.to_lowercase().match_indices(&self.search) {
                 if i == 0 && pos <= jpos.x as usize {
                     continue;
                 }
@@ -956,23 +1048,57 @@ impl<'a, 'b> EditorState<'a, 'b> {
         self.mode = EditorMode::OperatorPending(|a, b| a.copy_pos(b));
     }
 
+    fn insert_pre_edit(&mut self) -> usize {
+        if let EditEvent::InsertModeEdit(ref mut fort) = self.undo_history.edits.last_mut().unwrap() {
+            let mut found = fort.0.iter_mut().enumerate().find(|(b, a)| if let LineEdit::Edited(diff) = a { if diff.line == self.cursor.y { true } else { false } } else { false });
+            if found.is_none() {
+                fort.0.push(LineEdit::Edited(LineDiff { line: self.cursor.y, old: self.contents[self.cursor.y as usize].to_owned(), new: String::new()}));
+                found = Some((fort.0.len() - 1, fort.0.last_mut().unwrap()));
+            }
+            found.unwrap().0
+        } else {
+            panic!("InsertModeEdit not present, this is not supposed to happen");
+        }
+    }
+
+    fn insert_post_edit(&mut self, index: usize) {
+        if let EditEvent::InsertModeEdit(ref mut fort) = self.undo_history.edits.last_mut().unwrap() {
+            if let LineEdit::Edited(ref mut diff) = fort.0[index] {
+                diff.new = self.contents[self.cursor.y as usize].to_owned();
+            }
+        } else {
+            panic!("InsertModeEdit not present, this is not supposed to happen");
+        }
+    }
+
     fn insert(&mut self, text: &str) {
+        let index = self.insert_pre_edit();
         self.contents[self.cursor.y as usize].insert_str(self.cursor.x as usize, text);
+        self.insert_post_edit(index);
         for _ in 0..text.len() { // TODO dont
             self.move_right();
         }
+        println!("{:?}", self.undo_history);
     }
 
     fn backspace(&mut self) {
         if self.cursor.x > 0 {
+            let index = self.insert_pre_edit();
             self.contents[self.cursor.y as usize].remove(self.cursor.x as usize - 1);
+            self.insert_post_edit(index);
             self.move_left();
         } else {
+            if let EditEvent::InsertModeEdit(ref mut fort) = self.undo_history.edits.last_mut().unwrap() {
+                fort.0.push(LineEdit::Removed(self.cursor.y, self.contents[self.cursor.y as usize].to_owned()));
+            }
+            println!("{:?}", self.undo_history.edits.last_mut().unwrap());
             if self.contents[self.cursor.y as usize].len() > 0 {
                 let line = self.contents.remove(self.cursor.y as usize);
                 self.move_up();
+                    let index = self.insert_pre_edit();
                 self.move_to_line_end();
                 self.get_current_line_mut().push_str(&line);
+                    self.insert_post_edit(index);
             } else {
                 self.contents.remove(self.cursor.y as usize);
                 self.move_up();
@@ -982,6 +1108,7 @@ impl<'a, 'b> EditorState<'a, 'b> {
     }
 
     fn insert_mode(&mut self) {
+        self.undo_history.push(EditEvent::InsertModeEdit(LineEdits(Vec::new())));
         self.mode = EditorMode::Insert;
         self.drawing_context.video.text_input().start();
     }
@@ -1421,6 +1548,7 @@ fn create_syntax_theme(scheme: &CColorscheme) -> Theme {
 }
 
 fn main() {
+    sdl2::hint::set_video_minimize_on_focus_loss(false);
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
     let gl_attr = video.gl_attr();
@@ -1430,6 +1558,8 @@ fn main() {
         .window("space", 640, 480)
         .opengl()
         .resizable()
+        .position_centered()
+        .allow_highdpi()
         .build()
         .unwrap();
     let gl_context = window.gl_create_context().unwrap();
@@ -1447,8 +1577,9 @@ fn main() {
     let quad_shader = create_shader(&gl, include_str!("quad.vert"), include_str!("quad.frag"));
     let text_shader = create_shader(&gl, include_str!("quad.vert"), include_str!("text.frag"));
 
+    let home = std::env::var("HOME").unwrap();
     let config: EditorConfig = toml::from_str(
-        std::fs::read_to_string("/home/robin/.config/space/config.toml")
+        std::fs::read_to_string(format!("{}/.config/space/config.toml", home))
             .unwrap()
             .as_str(),
     )
@@ -1920,6 +2051,9 @@ fn main() {
                             if matches!(editor.mode, EditorMode::OperatorPending(..)) {
                                 editor.normal_mode();
                             }
+                        } else {
+                            //editor.cursor = editor.clamp_pos(editor.cursor.clone());
+                            editor.clamp_cursor();
                         }
                     }
                     match editor.mode {

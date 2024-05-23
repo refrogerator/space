@@ -7,4 +7,3 @@ fn main () {
 	let test = 4.5;
 	println!("{}", test);
 }
-

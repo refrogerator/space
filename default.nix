@@ -8,5 +8,7 @@ pkgs.rustPlatform.buildRustPackage rec {
   postBuild = ''
     mkdir $out/share/space/ -p
     cp -r res $out/share/space
+    mkdir $out/share/applications/ -p
+    cp res/Space.desktop $out/share/applications
   '';
 }

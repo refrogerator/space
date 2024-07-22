@@ -72,6 +72,9 @@ impl IVec2 {
     fn new(x: i32, y: i32) -> Self {
         return IVec2 { x, y };
     }
+    fn add(&self, b: IVec2) -> IVec2 {
+        IVec2::new(self.x + b.x, self.y + b.y)
+    }
 }
 
 struct Vec2 {
@@ -864,6 +867,14 @@ impl<'a, 'b> EditorState<'a, 'b> {
                 EditEvent::Delete(pos, _) => {
                     self.delete_pos(pos.to_owned(), false);
                 }
+                EditEvent::Paste(pos, str) => {
+                    println!("{:?}", event);
+                    if let Position::Range(a, _) = pos {
+                        self.sanitize_insert_at(&str, a.clone(), false);
+                    } else if let Position::Lines(a, _) = pos {
+                        self.sanitize_insert_at(&str, IVec2::new(0, a - 1), false);
+                    }
+                }
                 EditEvent::InsertModeEdit(ref edits) => {
                     println!("{:?}", edits);
                     for edit in edits.0.iter() {
@@ -913,7 +924,10 @@ impl<'a, 'b> EditorState<'a, 'b> {
                             return;
                         }
                     };
-                    self.sanitize_insert_at(&content, pos);
+                    self.sanitize_insert_at(&content, pos, false);
+                }
+                EditEvent::Paste(pos, _) => {
+                    self.delete_pos(pos, false);
                 }
                 EditEvent::InsertModeEdit(ref edits) => {
                     println!("{:?}", edits);
@@ -939,20 +953,28 @@ impl<'a, 'b> EditorState<'a, 'b> {
         }
     }
 
-    fn sanitize_insert_at(&mut self, text: &str, pos: IVec2) {
-        if text.contains('\n') {
-            let lines = text.lines().collect::<Vec<&str>>();
-            for (i, line) in lines.into_iter().enumerate() {
+    fn sanitize_insert_at(&mut self, text: &str, pos: IVec2, add_undo: bool) {
+        let ret_pos = if text.contains('\n') {
+            let mut num_lines = 0;
+            let mut last_line_len = 0;
+            for (i, line) in text.lines().enumerate() {
+                num_lines += 1;
                 self.contents.insert((pos.y + 1) as usize + i, line.to_string());
+                last_line_len = line.len();
             }
+            Position::Lines(pos.y + 1, pos.y + num_lines)
         } else {
             self.contents[pos.y as usize].insert_str(pos.x as usize, text);
+            Position::Range(pos.clone(), pos.add(IVec2::new(text.len() as i32, 0)))
+        };
+        if add_undo {
+            self.undo_history.push(EditEvent::Paste(ret_pos, text.to_owned()));
         }
     }
 
     fn paste(&mut self) {
         let text = self.drawing_context.video.clipboard().clipboard_text().unwrap();
-        self.sanitize_insert_at(&text, self.cursor.clone());
+        self.sanitize_insert_at(&text, self.cursor.clone(), true);
     }
 
     fn submit_new_search(&mut self, search: &str) {

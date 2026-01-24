@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="111.68024mm"
+   height="111.8616mm"
+   viewBox="0 0 111.68024 111.8616"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <g
+     id="layer1"
+     transform="translate(-45.134194,-58.42)">
+    <rect
+       style="fill:#202344;fill-opacity:1;stroke-width:0.265;stroke-dasharray:none"
+       id="rect1"
+       width="111.68014"
+       height="91.042053"
+       x="45.134308"
+       y="68.828888"
+       ry="11.932892" />
+    <path
+       d="m 156.8142,82.955143 v -2.193148 c 0,-6.610815 -5.32179,-11.933121 -11.9326,-11.933121 H 57.067318 c -6.610816,0 -11.933122,5.322306 -11.933122,11.933121 v 2.193148 z"
+       style="fill:#17171d;fill-opacity:1;stroke-width:0.265"
+       id="path3" />
+    <path
+       style="fill:#fbed1c;fill-opacity:1;stroke-width:0.264999;stroke-dasharray:none"
+       id="path5"
+       d="m 63.75119,97.17617 -7.975826,0.423685 -4.172596,6.810485 -2.867614,-7.454532 -7.766563,-1.863817 6.203544,-5.030841 -0.627404,-7.962392 6.701614,4.345306 7.378806,-3.057212 -2.061718,7.716388 z"
+       transform="translate(17.480896,9.2530518)" />
+    <path
+       style="fill:#fbed1c;fill-opacity:1;stroke-width:0.264999;stroke-dasharray:none"
+       id="path6"
+       d="m 61.394624,147.76785 6.774998,-9.29871 -3.819205,-10.85266 10.937185,3.56995 9.141294,-6.98593 -0.01544,11.50505 9.468835,6.53512 -10.946731,3.54056 -3.289233,11.02486 -6.750006,-9.31686 z"
+       transform="translate(7.2469482,-2.9708862)" />
+    <path
+       style="fill:#fbed1c;fill-opacity:1;stroke-width:0.264999;stroke-dasharray:none"
+       id="path7"
+       d="m 108.91269,141.63071 -8.44192,-8.37096 -11.681649,2.20863 5.352559,-10.61552 -5.710358,-10.4274 11.749978,1.81021 8.15246,-8.65312 1.90933,11.73429 10.74885,5.07948 -10.56995,5.44197 z"
+       transform="translate(27.51947,-12.053741)" />
+  </g>
+</svg>

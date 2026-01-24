@@ -8,9 +8,9 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
 use glow::*;
-use sdl2::event::{Event, WindowEvent};
-use sdl2::keyboard::Keycode;
-use sdl2::keyboard::Mod;
+use sdl3::event::{Event, WindowEvent};
+use sdl3::keyboard::Keycode;
+use sdl3::keyboard::Mod;
 use swash::scale::Source;
 
 use core::str::FromStr;
@@ -559,12 +559,12 @@ impl<'a, 'b> EditorState<'a, 'b> {
 
     fn arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState)) {
         self.mode = EditorMode::ArgumentPending(query_text.to_string(), callback);
-        self.drawing_context.video.text_input().start();
+        self.drawing_context.video.text_input().start(&self.drawing_context.window);
     }
 
     fn sec_arg_pending_mode(&mut self, query_text: &str, callback: fn(&mut EditorState)) {
         self.mode = EditorMode::SecArgumentPending(query_text.to_string(), callback);
-        self.drawing_context.video.text_input().start();
+        self.drawing_context.video.text_input().start(&self.drawing_context.window);
     }
 
     fn open_file_mode(&mut self) {
@@ -1135,7 +1135,7 @@ impl<'a, 'b> EditorState<'a, 'b> {
     fn insert_mode(&mut self) {
         self.undo_history.push(EditEvent::InsertModeEdit(LineEdits(Vec::new())));
         self.mode = EditorMode::Insert;
-        self.drawing_context.video.text_input().start();
+        self.drawing_context.video.text_input().start(&self.drawing_context.window);
     }
 
     fn insert_mode_after(&mut self) {
@@ -1171,7 +1171,7 @@ impl<'a, 'b> EditorState<'a, 'b> {
         // }
         self.mode = EditorMode::Normal;
         self.cursor = self.clamp_pos(self.cursor.clone());
-        self.drawing_context.video.text_input().stop();
+        self.drawing_context.video.text_input().stop(&self.drawing_context.window);
     }
 
     fn delete_pos(&mut self, pos: Position, add_undo: bool) {
@@ -1245,8 +1245,8 @@ impl<'a, 'b> EditorState<'a, 'b> {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
-    scancode: sdl2::keyboard::Keycode,
-    mods: sdl2::keyboard::Mod,
+    scancode: sdl3::keyboard::Keycode,
+    mods: sdl3::keyboard::Mod,
 }
 
 fn string_to_keys(s: &str) -> Vec<Key> {
@@ -1286,16 +1286,16 @@ fn string_to_keys(s: &str) -> Vec<Key> {
             "X" => (Keycode::X, true),
             "Y" => (Keycode::Y, true),
             "Z" => (Keycode::Z, true),
-            "!" => (Keycode::Num1, true),
-            "@" => (Keycode::Num2, true),
-            "#" => (Keycode::Num3, true),
-            "$" => (Keycode::Num4, true),
-            "%" => (Keycode::Num5, true),
-            "^" => (Keycode::Num6, true),
-            "&" => (Keycode::Num7, true),
-            "*" => (Keycode::Num8, true),
-            "(" => (Keycode::Num9, true),
-            ")" => (Keycode::Num0, true),
+            "!" => (Keycode::_1, true),
+            "@" => (Keycode::_2, true),
+            "#" => (Keycode::_3, true),
+            "$" => (Keycode::_4, true),
+            "%" => (Keycode::_5, true),
+            "^" => (Keycode::_6, true),
+            "&" => (Keycode::_7, true),
+            "*" => (Keycode::_8, true),
+            "(" => (Keycode::_9, true),
+            ")" => (Keycode::_0, true),
             "RET" => (Keycode::Return, true),
             "ESC" => (Keycode::Escape, true),
             "BSP" => (Keycode::Backspace, true),
@@ -1307,8 +1307,8 @@ fn string_to_keys(s: &str) -> Vec<Key> {
             "}" => (Keycode::RightBracket, true),
             "|" => (Keycode::Backslash, true),
             ":" => (Keycode::Semicolon, true),
-            "\"" => (Keycode::Quote, true),
-            "~" => (Keycode::Backquote, true),
+            "\"" => (Keycode::DblApostrophe, true),
+            "~" => (Keycode::Grave, true),
             "<" => (Keycode::Comma, true),
             ">" => (Keycode::Period, true),
             "?" => (Keycode::Slash, true),
@@ -1352,16 +1352,16 @@ fn string_to_keys(s: &str) -> Vec<Key> {
             "x" => (Keycode::X, false),
             "y" => (Keycode::Y, false),
             "z" => (Keycode::Z, false),
-            "1" => (Keycode::Num1, false),
-            "2" => (Keycode::Num2, false),
-            "3" => (Keycode::Num3, false),
-            "4" => (Keycode::Num4, false),
-            "5" => (Keycode::Num5, false),
-            "6" => (Keycode::Num6, false),
-            "7" => (Keycode::Num7, false),
-            "8" => (Keycode::Num8, false),
-            "9" => (Keycode::Num9, false),
-            "0" => (Keycode::Num0, false),
+            "1" => (Keycode::_1, false),
+            "2" => (Keycode::_2, false),
+            "3" => (Keycode::_3, false),
+            "4" => (Keycode::_4, false),
+            "5" => (Keycode::_5, false),
+            "6" => (Keycode::_6, false),
+            "7" => (Keycode::_7, false),
+            "8" => (Keycode::_8, false),
+            "9" => (Keycode::_9, false),
+            "0" => (Keycode::_0, false),
             "ret" => (Keycode::Return, false),
             "esc" => (Keycode::Escape, false),
             "bsp" => (Keycode::Backspace, false),
@@ -1373,8 +1373,8 @@ fn string_to_keys(s: &str) -> Vec<Key> {
             "]" => (Keycode::RightBracket, false),
             "\\" => (Keycode::Backslash, false),
             ";" => (Keycode::Semicolon, false),
-            "'" => (Keycode::Quote, false),
-            "`" => (Keycode::Backquote, false),
+            "'" => (Keycode::Apostrophe, false),
+            "`" => (Keycode::Grave, false),
             "," => (Keycode::Comma, false),
             "." => (Keycode::Period, false),
             "/" => (Keycode::Slash, false),
@@ -1449,11 +1449,11 @@ fn srgb_to_rgb(color: &Color) -> Color {
 
 struct DrawingContext<'a> {
     gl: glow::Context,
-    video: sdl2::VideoSubsystem,
+    video: sdl3::VideoSubsystem,
     quad_shader: glow::Program,
     text_shader: glow::Program,
     current_font: &'a LoadedFont,
-    window: sdl2::video::Window,
+    window: sdl3::video::Window,
 }
 
 fn parse_keymap<'a>(
@@ -1479,7 +1479,7 @@ impl<'a> DrawingContext<'a> {
             dbg!(ch);
         }
         let glyph = &self.current_font.glyphs[ch as usize - 32];
-        let window_size = self.window.drawable_size();
+        let window_size = self.window.size();
         let block_size = self.current_font.max_advance;
         let pen = (pos.x as f32, pos.y as f32);
         // println!("{:?}", pen);
@@ -1576,23 +1576,22 @@ fn create_syntax_theme(scheme: &CColorscheme) -> Theme {
 }
 
 fn main() {
-    sdl2::hint::set_video_minimize_on_focus_loss(false);
-    let sdl = sdl2::init().unwrap();
+    sdl3::hint::set_video_minimize_on_focus_loss(false);
+    let sdl = sdl3::init().unwrap();
     let video = sdl.video().unwrap();
     let gl_attr = video.gl_attr();
-    gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
+    gl_attr.set_context_profile(sdl3::video::GLProfile::Core);
     gl_attr.set_context_version(3, 0);
     let window = video
         .window("space", 640, 480)
         .opengl()
         .resizable()
         .position_centered()
-        .allow_highdpi()
         .build()
         .unwrap();
     let gl_context = window.gl_create_context().unwrap();
     let gl = unsafe {
-        glow::Context::from_loader_function(|s| video.gl_get_proc_address(s) as *const _)
+        glow::Context::from_loader_function(|s| video.gl_get_proc_address(s).unwrap() as *const _)
     };
     let mut event_loop = sdl.event_pump().unwrap();
 
@@ -1711,8 +1710,8 @@ fn main() {
     // let mut vel = [0.4, 1.0];
     let mut old = std::time::Instant::now();
 
-    drawing_context.video.text_input().start();
-    drawing_context.video.text_input().stop();
+    drawing_context.video.text_input().start(&drawing_context.window);
+    drawing_context.video.text_input().stop(&drawing_context.window);
 
     let scheme: CColorscheme = toml::from_str(
         std::fs::read_to_string(get_res_file_path(format!("colorschemes/{}.toml", &config.colorscheme).as_str()))
@@ -2002,7 +2001,7 @@ fn main() {
         old = std::time::Instant::now();
         for event in event_loop.poll_iter() {
             match event {
-                sdl2::event::Event::Quit { .. } => quit = true,
+                sdl3::event::Event::Quit { .. } => quit = true,
                 Event::KeyDown {
                     timestamp,
                     window_id,
@@ -2010,6 +2009,7 @@ fn main() {
                     scancode,
                     keymod,
                     repeat,
+                    ..
                 } => {
                     match keycode.unwrap() {
                         Keycode::LAlt
@@ -2158,7 +2158,7 @@ fn main() {
         unsafe {
             drawing_context.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            let window_size = drawing_context.window.drawable_size();
+            let window_size = drawing_context.window.size();
 
             let block_size = (max_advance.0 as i32, max_advance.1 as i32);
 
